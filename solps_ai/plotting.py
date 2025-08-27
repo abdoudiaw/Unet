@@ -269,21 +269,22 @@ def plot_te_log10(te_ev, mask=None, title='Predicted log10 Te', fname=None):
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
-from .predict import predict_multi  # returns (C,H,W) in physical units
+from .predict import predict_multi  # (C,H,W)
 
 def show_case_prediction_grid(
     model, loader, norm, *,
     order=("Te","Ti","ni","ne"),
-    target_keys=None,               # sequence of names matching channel order in dataset
+    target_keys=None,               # channel names in dataset order
     device="cuda", idx=None,
     R2d=None, Z2d=None, savepath=None,
     param_scaler=None, cmap="viridis"
 ):
     """
     Plot one validation case as a 4x3 grid:
-      rows:   Te, Ti, ni, ne (in this order)
+      rows:   Te, Ti, ni, ne
       cols:   Target | Prediction | |Error|
-    Assumes physical arrays are already in log10 if that's what norm.inverse returns.
+    Returns:
+      idx, params_scaled, params_raw, fig
     """
     # ----- pick a sample -----
     ds = loader.dataset
@@ -293,29 +294,31 @@ def show_case_prediction_grid(
     b = base_ds[i]
     yN = b["y"]; m = b["mask"]
 
-    # physical target for ALL channels (C,H,W)
+    # physical target (already log10 if norm.inverse returns that)
     with torch.no_grad():
-        y_phys = norm.inverse(yN.unsqueeze(0), m.unsqueeze(0)).squeeze(0).cpu().numpy()
+        y_phys = norm.inverse(yN.unsqueeze(0), m.unsqueeze(0)).squeeze(0).cpu().numpy()  # (C,H,W)
 
     mask = m.squeeze(0).cpu().numpy()
     params_scaled = None
     if hasattr(base_ds, "params") and base_ds.params is not None:
         params_scaled = np.asarray(base_ds.params[i], dtype=np.float32)
 
-    # model prediction for ALL channels in phys units (C,H,W)
+    # raw params from scaler
+    params_raw = None
+    if param_scaler is not None and params_scaled is not None:
+        mu, std = param_scaler
+        params_raw = params_scaled * std + mu
+
+    # model prediction (C,H,W)
     Ypred = predict_multi(model, norm, mask, params_scaled, device=device, as_numpy=True)
 
-    # mapping from names -> channel indices
-    if target_keys is None and hasattr(base_ds, "target_keys"):
-        target_keys = list(map(str, base_ds.target_keys))
+    # names
     if target_keys is None:
         target_keys = [f"ch{c}" for c in range(y_phys.shape[0])]
-
     name_to_idx = {name: k for k, name in enumerate(target_keys)}
-    # only keep names present
     names = [n for n in order if n in name_to_idx]
 
-    # axes extent
+    # extent
     extent=None; xlab="x"; ylab="y"
     if R2d is not None and Z2d is not None:
         H,W = Ypred.shape[-2], Ypred.shape[-1]
@@ -324,12 +327,11 @@ def show_case_prediction_grid(
         extent = [R_axis[0], R_axis[-1], Z_axis[0], Z_axis[-1]]
         xlab, ylab = "R [m]", "Z [m]"
 
-    # figure: rows=len(names), cols=3
+    # figure
     R = len(names); C = 3
     fig, axes = plt.subplots(R, C, figsize=(4.3*C, 3.8*R), squeeze=False, constrained_layout=True)
 
-    def _masked(a):  # apply mask, keep NaNs outside
-        return np.where(mask>0.5, a, np.nan)
+    def _masked(a): return np.where(mask>0.5, a, np.nan)
 
     for r, name in enumerate(names):
         k = name_to_idx[name]
@@ -345,7 +347,7 @@ def show_case_prediction_grid(
             imh = ax.imshow(data, origin="lower", extent=extent, cmap=cmap,
                             vmin=lim[0] if lim else None, vmax=lim[1] if lim else None,
                             aspect="equal")
-            ax.set_title(title)
+            ax.set_title(title + " (log₁₀)")
             ax.set_xlabel(xlab); ax.set_ylabel(ylab)
             fig.colorbar(imh, ax=ax, fraction=0.046, pad=0.04)
 
@@ -353,9 +355,9 @@ def show_case_prediction_grid(
         im(axes[r,1], pred, f"{name} • Prediction", (vmin, vmax))
         im(axes[r,2], err,  f"{name} • |Error|",    (0.0, emax))
 
-    plt.suptitle("Validation case — Te, Ti, ni, ne (log₁₀ values if your targets are log₁₀)")
+    plt.suptitle("Validation case — log₁₀(Te, Ti, ni, ne)")
     if savepath:
         fig.savefig(savepath, dpi=300, bbox_inches="tight")
     plt.show()
 
-    return i, params_scaled, fig
+    return i, params_scaled, params_raw, fig
