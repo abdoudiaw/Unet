@@ -80,17 +80,17 @@ class SOLPSDataset(Dataset):
 
         return {"x": x, "y": y, "mask": mask}
 
-
 def fit_param_scaler(raw_params_train):
-    mu = raw_params_train.mean(axis=0).astype(np.float32)
-    std = raw_params_train.std(axis=0).astype(np.float32)
-    std[std < 1e-12] = 1.0
-    return mu, std
-
+    x = raw_params_train.astype(np.float64)
+    mu  = x.mean(axis=0)
+    std = x.std(axis=0)
+    std = np.where(~np.isfinite(std) | (std < 1e-12), 1.0, std)
+    mu  = np.where(~np.isfinite(mu), 0.0, mu)
+    return mu.astype(np.float32), std.astype(np.float32)  # keep storage small
 
 def apply_param_scaler(dataset, mu, std):
     if dataset.params.size and mu is not None:
-        dataset.params = (dataset.params - mu) / std
+        dataset.params = (dataset.params.astype(np.float32) - mu) / std
 
 
 def make_loaders(npz_path, inputs_mode="params", batch_size=16, split=0.85, seed=42,
