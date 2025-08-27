@@ -204,79 +204,98 @@ def plot_te_log10(te_ev, mask=None, title='Predicted log10 Te', fname=None):
 #import torch
 #import matplotlib.pyplot as plt
 
-def show_case_prediction(model, loader, norm, device="cuda",
-                         idx=None, R2d=None, Z2d=None, savepath=None):
+def show_case_prediction(
+    model, loader, norm, device="cuda", *,
+    idx=None, R2d=None, Z2d=None, savepath=None,
+    param_scaler=None, cmap="viridis"
+):
     """
-    Pick a case from `loader` (train/val), run model, and plot:
-      Target Te (eV) | Prediction Te (eV) | |Error| (eV)
-    If R2d/Z2d (cell centers) are given, axes are in meters.
-    Returns: (global_idx, params_scaled, fig)
-    """
-    # unwrap Subset -> underlying SOLPSDataset
-    subset  = loader.dataset                      # torch.utils.data.Subset
-    base_ds = subset.dataset                      # SOLPSDataset with .params, .mask, .Te, .normalizer
-    ids     = subset.indices
+    Pick a real sample from `loader` (train/val), run the model, and plot:
+      [Target Te (eV)] | [Prediction Te (eV)] | [|Error| (eV)]
 
-    # choose a sample within this split
+    If R2d/Z2d are provided (cell-center coords), axes are labeled in meters.
+    Returns:
+        (global_idx, params_scaled, params_raw, fig)
+    """
+    # --- resolve underlying dataset + global indices ---
+    ds = loader.dataset
+    if hasattr(ds, "dataset") and hasattr(ds, "indices"):  # torch.utils.data.Subset
+        base_ds, ids = ds.dataset, ds.indices
+    else:  # already the base dataset
+        base_ds, ids = ds, np.arange(len(ds))
+
+    # pick an example within this split (supports negative idx)
     j = np.random.randint(len(ids)) if idx is None else int(idx if idx >= 0 else len(ids) + idx)
-    i = int(ids[j])  # global index into base_ds
+    i = int(ids[j])  # global index into base dataset
 
-    # fetch normalized target & mask from the dataset (returns {"x","y","mask"}) :contentReference[oaicite:3]{index=3}
-    b = base_ds[i]
+    # --- fetch normalized target + mask ---
+    b = base_ds[i]             # dict with "y","mask",...
     y_norm = b["y"]            # (1,H,W), normalized
     m_t    = b["mask"]         # (1,H,W)
-    mask   = m_t.squeeze(0).cpu().numpy()  # (H,W)
+    mask   = m_t.squeeze(0).detach().cpu().numpy().astype(np.float32)  # (H,W)
 
-    # target Te in eV
+    # --- target Te in eV ---
     with torch.no_grad():
-        te_target = norm.inverse(y_norm, m_t).squeeze(0).cpu().numpy().astype(np.float32)
+        te_target = norm.inverse(y_norm, m_t).squeeze(0).detach().cpu().numpy().astype(np.float32)
 
-    # the SAME scaled params used for training inputs (dataset stores them scaled) :contentReference[oaicite:4]{index=4}
-    params_scaled = base_ds.params[i].astype(np.float32)  # shape (P,)
+    # --- params (scaled, as used by the model) ---
+    params_scaled = None
+    if hasattr(base_ds, "params") and base_ds.params is not None:
+        params_scaled = np.asarray(base_ds.params[i], dtype=np.float32)  # shape (P,)
 
-    # model prediction in eV using your helper (builds [mask, params] internally) :contentReference[oaicite:5]{index=5}
+    # optional: unscale to raw physical params
+    params_raw = None
+    if params_scaled is not None and param_scaler is not None and param_scaler[0] is not None:
+        mu, std = param_scaler
+        params_raw = params_scaled * np.asarray(std, np.float32) + np.asarray(mu, np.float32)
+
+    # --- model prediction in eV ---
     te_pred = predict_te(model, norm, mask, params_scaled, device=device, as_numpy=True)
 
-    # error map inside mask
+    # --- error map (inside mask only) ---
     err = np.abs(te_pred - te_target) * (mask > 0.5)
 
-    # axes (optional)
+    # --- axes / extent (optional rectilinear coordinates) ---
     if R2d is not None and Z2d is not None:
         H, W = te_pred.shape
-        R_axis = np.linspace(float(R2d.min()), float(R2d.max()), W)
-        Z_axis = np.linspace(float(Z2d.min()), float(Z2d.max()), H)
+        R_axis = np.linspace(float(np.min(R2d)), float(np.max(R2d)), W)
+        Z_axis = np.linspace(float(np.min(Z2d)), float(np.max(Z2d)), H)
         extent = [R_axis[0], R_axis[-1], Z_axis[0], Z_axis[-1]]
         xlab, ylab = "R [m]", "Z [m]"
     else:
         extent = None
         xlab, ylab = "x", "y"
 
-    # shared color limits for target/pred
+    # --- shared color limits for target/pred ---
     both = np.where(mask > 0.5, np.stack([te_target, te_pred], 0), np.nan)
     vmin, vmax = np.nanpercentile(both, [1, 99])
+    emax = float(np.nanpercentile(err, 99))
 
     fig, axes = plt.subplots(1, 3, figsize=(13, 4), constrained_layout=True)
 
-    def _imshow(ax, data, title, vlim=None):
+    def _imshow(ax, data, title, lim=None):
         d = np.where(mask > 0.5, data, np.nan)
-        im = ax.imshow(d, origin="lower", extent=extent, vmin=None if vlim is None else vlim[0],
-                       vmax=None if vlim is None else vlim[1], aspect="equal")
+        im = ax.imshow(
+            d, origin="lower", extent=extent, cmap=cmap,
+            vmin=None if lim is None else lim[0],
+            vmax=None if lim is None else lim[1], aspect="equal"
+        )
         ax.set_title(title); ax.set_xlabel(xlab); ax.set_ylabel(ylab)
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-    _imshow(axes[0], te_target, "Target Te (eV)", vlim=(vmin, vmax))
-    _imshow(axes[1], te_pred,   "Prediction Te (eV)", vlim=(vmin, vmax))
-    # error gets its own scale
-    e99 = float(np.nanpercentile(err, 99))
-    _imshow(axes[2], err, "Abs error (eV)", vlim=(0.0, e99))
+    _imshow(axes[0], te_target, "Target Te (eV)", (vmin, vmax))
+    _imshow(axes[1], te_pred,   "Prediction Te (eV)", (vmin, vmax))
+    _imshow(axes[2], err,       "Abs error (eV)", (0.0, emax))
 
-    P = params_scaled.shape[0]
+    P = 0 if params_scaled is None else int(params_scaled.shape[0])
     fig.suptitle(f"Dataset case idx={i} (split idx={j})  |  P={P} params", y=1.03, fontsize=12)
+
     if savepath:
         fig.savefig(savepath, dpi=300, bbox_inches="tight")
     plt.show()
 
-    return i, params_scaled, fig
+    return i, params_scaled, params_raw, fig
+
 
 # import numpy as np
 # from scipy.interpolate import RegularGridInterpolator
