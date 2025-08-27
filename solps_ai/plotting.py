@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import torch
 
 def display_random_samples(train_loader, norm, n=4):
     ds = train_loader.dataset                 # this is a Subset
