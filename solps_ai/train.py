@@ -6,7 +6,10 @@ def train_unet(
     train_loader, val_loader, norm, in_ch, device, *,
     inputs_mode="params", lam_grad=0.2, lam_w=1.0, lam_ev=0.0,
     epochs=10, base=32, param_scaler=None, model_cls=None,
-    save_path="unet_best.pt", return_history: bool = True, history_path: str | None = None
+    save_path="unet_best.pt", return_history: bool = True, history_path: str | None = None,
+    # ---- LR scheduler knobs (tweak as needed) ----
+    lr_init: float = 1e-3, lr_factor: float = 0.5, lr_patience: int = 5, lr_min: float = 1e-5,
+    lr_threshold: float = 1e-4
 ):
     """
     param_scaler: (mu, std) or None, to store for inference
@@ -17,7 +20,14 @@ def train_unet(
         model_cls = lambda in_ch, out_ch: UNet(in_ch=in_ch, out_ch=1, base=base)
 
     model = model_cls(in_ch, 1).to(device)
-    opt   = torch.optim.Adam(model.parameters(), lr=1e-3)
+    opt   = torch.optim.Adam(model.parameters(), lr=lr_init)
+
+    # ---- ReduceLROnPlateau ----
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        opt, mode="min", factor=lr_factor, patience=lr_patience,
+        threshold=lr_threshold, threshold_mode="rel",
+        cooldown=0, min_lr=lr_min, eps=1e-8, verbose=False
+    )
 
     # AMP
     use_cuda  = (str(device) == "cuda")
@@ -107,12 +117,21 @@ def train_unet(
         history["va_mae_eV"].append(va_MAE_eV)
         history["va_rmse_eV"].append(va_RMSE_eV)
 
+        # ---- log & schedule ----
+        lr_before = opt.param_groups[0]["lr"]
         print(
             f"epoch {epoch:02d} | "
             f"train MSE {tr_loss:.4f}  MAE_norm {tr_maeN:.4f} | "
             f"val MSE {va_loss:.4f}  MAE_norm {va_maeN:.4f} | "
-            f"val MAE {va_MAE_eV:.2f} eV  RMSE {va_RMSE_eV:.2f} eV"
+            f"val MAE {va_MAE_eV:.2f} eV  RMSE {va_RMSE_eV:.2f} eV | "
+            f"lr {lr_before:.2e}"
         )
+
+        # step the LR scheduler on validation loss
+        scheduler.step(va_loss)
+        lr_after = opt.param_groups[0]["lr"]
+        if lr_after < lr_before:
+            print(f"  ↳ ReduceLROnPlateau: lr {lr_before:.2e} → {lr_after:.2e}")
 
         # ---- checkpoint best ----
         if va_loss < best_val:

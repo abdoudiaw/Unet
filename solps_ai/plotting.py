@@ -1,7 +1,39 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-def plot_training_curves(history, title="Training"):
+def display_random_samples(train_loader, norm, n=4):
+    ds = train_loader.dataset                 # this is a Subset
+    idxs = np.random.choice(len(ds), size=n, replace=False)
+
+    # collect samples
+    ys, ms, te_evs = [], [], []
+    for i in idxs:
+        b = ds[i]
+        y = b["y"]           # (1,H,W)
+        m = b["mask"]        # (1,H,W)
+        with torch.no_grad():
+            te_ev = norm.inverse(y.unsqueeze(0), m.unsqueeze(0)).squeeze(0)  # (1,H,W)
+        ys.append(y.squeeze(0).numpy())
+        ms.append(m.squeeze(0).numpy())
+        te_evs.append(te_ev.squeeze(0).numpy())
+
+    ys = np.stack(ys)        # (n,H,W)
+    ms = np.stack(ms)
+    te_evs = np.stack(te_evs)
+
+    # plot
+    fig, axes = plt.subplots(3, n, figsize=(4*n, 10))
+    for j in range(n):
+        axes[0,j].imshow(ms[j], origin='lower'); axes[0,j].set_title(f"Mask idx={idxs[j]}"); axes[0,j].axis('off')
+        im1 = axes[1,j].imshow(np.where(ms[j]>0.5, ys[j], np.nan), origin='lower')
+        axes[1,j].set_title("Target (normalized)"); axes[1,j].axis('off'); fig.colorbar(im1, ax=axes[1,j], fraction=0.046, pad=0.04)
+        im2 = axes[2,j].imshow(np.where(ms[j]>0.5, te_evs[j], np.nan), origin='lower')
+        axes[2,j].set_title("Target Te (eV)"); axes[2,j].axis('off'); fig.colorbar(im2, ax=axes[2,j], fraction=0.046, pad=0.04)
+    plt.suptitle("Random training samples"); plt.tight_layout(); plt.show()
+
+
+
+def _plot_training_curves(history, title="Training"):
     """
     history: dict with lists: 'tr_mse','tr_maeN','va_mse','va_maeN','va_mae_eV','va_rmse_eV'
     """
