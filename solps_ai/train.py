@@ -19,11 +19,29 @@ def train_unet(
     B, C, H, W = b0["y"].shape  # C = number of target channels
 
     model = model_cls(in_ch, C).to(device)
+    from inspect import signature
     opt = torch.optim.AdamW(model.parameters(), lr=lr_init)
-    sch = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        opt, mode="min", factor=lr_factor, patience=lr_patience,
-        min_lr=lr_min, threshold=lr_threshold, verbose=False
+
+    Sched = torch.optim.lr_scheduler.ReduceLROnPlateau
+
+    # What we *want* to pass
+    want = dict(
+        mode="min",
+        factor=lr_factor,
+        patience=lr_patience,
+        min_lr=lr_min,
+        threshold=lr_threshold,
+        cooldown=0,
+        eps=1e-8,
+        verbose=False,          # some torch versions don't have this
+        threshold_mode="rel",   # safe default if present
     )
+
+    # Filter to only the params your installed torch accepts
+    allowed = set(signature(Sched.__init__).parameters.keys()) - {"self", "optimizer"}
+    kwargs = {k: v for k, v in want.items() if k in allowed}
+
+    sch = Sched(opt, **kwargs)
 
     # edge weights (1,1,H,W) -> broadcast in loss
     m0 = train_loader.dataset[0]["mask"]  # (1,H,W) CPU
