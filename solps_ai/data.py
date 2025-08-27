@@ -88,53 +88,68 @@ class MaskedLogStandardizer:
 
 
 # ---------- Dataset ----------
+# data.py
+
 class SOLPSDataset(Dataset):
     """
-    Expects an NPZ with Te: (N,H,W), mask: (N,H,W), optional params: (N,P)
-    inputs="autoencoder": x=y (normalized); inputs!="autoencoder": x=[mask, params...]
+    Expects NPZ with either:
+      - legacy: Te: (N,H,W)
+      - new:    Y:  (N,C,H,W), target_keys
+    Always returns:
+      x: (in_ch,H,W), y: (C,H,W), mask: (1,H,W)
     """
-    def __init__(self, path, normalizer=None, inputs="autoencoder"):
+    def __init__(self, path, normalizer=None, inputs="autoencoder", include_coords=False):
         self.normalizer = normalizer
         self.inputs = inputs
+        self.include_coords = include_coords
+
         d = np.load(path, allow_pickle=True)
-        self.Te     = d["Te"].astype(np.float32)     # (N,H,W)
-        self.mask   = d["mask"].astype(np.float32)   # (N,H,W)
+        if "Y" in d.files:
+            self.Y = d["Y"].astype(np.float32)              # (N,C,H,W)
+        elif "Te" in d.files:
+            self.Y = d["Te"].astype(np.float32)[:, None]    # (N,1,H,W) legacy -> add channel dim
+        else:
+            raise KeyError("Dataset must contain 'Y' or 'Te'.")
+
+        self.mask   = d["mask"].astype(np.float32)          # (N,H,W)
         self.params = d.get("params", None)
         if self.params is None:
-            self.params = np.zeros((self.Te.shape[0], 0), dtype=np.float32)
+            self.params = np.zeros((self.Y.shape[0], 0), dtype=np.float32)
 
     def __len__(self):
-        return self.Te.shape[0]
+        return self.Y.shape[0]
 
     def __getitem__(self, idx):
-        # load arrays
-        Y_raw = torch.from_numpy(self.Y[idx]).float()          # (C,H,W)
-        mask  = torch.from_numpy(self.mask[idx]).unsqueeze(0).float()  # (1,H,W)
+        Y_raw = torch.from_numpy(self.Y[idx]).float()                 # (C,H,W)
+        mask  = torch.from_numpy(self.mask[idx]).unsqueeze(0).float() # (1,H,W)
         mask  = (mask > 0.5).float()
 
         # clean NaNs/infs
         Y_raw = torch.nan_to_num(Y_raw, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # normalized targets (per-channel, masked)
-        y = self.normalizer.transform(Y_raw, mask) if self.normalizer else (Y_raw * mask)
+        # y (normalized if normalizer provided)
+        if self.normalizer:
+            y = self.normalizer.transform(Y_raw, mask)                # (C,H,W) normalized
+        else:
+            y = Y_raw                                                 # raw; fitter will mask
 
         if self.inputs == "autoencoder":
             x = y.clone()
         else:
-            # inputs = [mask, params, optional coords...]
             H, W = mask.shape[-2:]
-            xs = [mask]  # (1,H,W)
+            xs = [mask]  # geometry channel
             if self.include_coords:
-                # cheap positional encodings
                 grid_r = torch.linspace(0, 1, W).view(1, 1, 1, W).expand(1, 1, H, W)
                 grid_z = torch.linspace(0, 1, H).view(1, 1, H, 1).expand(1, 1, H, W)
                 xs += [grid_r, grid_z]
-            if self.params is not None:
-                p = torch.from_numpy(self.params[idx]).view(-1, 1, 1).float().expand(-1, H, W)
+            if self.params is not None and self.params.shape[1] > 0:
+                p = torch.from_numpy(self.params[idx]).view(-1,1,1).float().expand(-1,H,W)
                 xs.append(p)
-            x = torch.cat(xs, dim=0)  # (1+extras+P, H, W)
+            x = torch.cat(xs, dim=0)                                  # (1 [+coords] + P, H, W)
 
         return {"x": x, "y": y, "mask": mask}
+
+
 
 
 def fit_param_scaler(raw_params_train):
