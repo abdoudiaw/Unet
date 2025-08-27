@@ -177,7 +177,7 @@ def plot_training_curves(history, savepath=None, title="Training curves",
         plt.show()
     return fig, axes
 
- def plot_te_log10(te_ev, mask=None, title='Predicted log10 Te', fname=None):
+def plot_te_log10(te_ev, mask=None, title='Predicted log10 Te', fname=None):
      te = np.array(te_ev, dtype=float)
      te = np.where(te > 0, np.log10(te), np.nan)
      if mask is not None:
