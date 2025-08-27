@@ -24,10 +24,17 @@ def train_unet(
 
     # ---- ReduceLROnPlateau ----
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        opt, mode="min", factor=lr_factor, patience=lr_patience,
-        threshold=lr_threshold, threshold_mode="rel",
-        cooldown=0, min_lr=lr_min, eps=1e-8, verbose=False
+        opt,
+        mode="min",
+        factor=lr_factor,
+        patience=lr_patience,
+        threshold=lr_threshold,
+        threshold_mode="rel",
+        cooldown=0,
+        min_lr=lr_min,
+        eps=1e-8,
     )
+
 
     # AMP
     use_cuda  = (str(device) == "cuda")
