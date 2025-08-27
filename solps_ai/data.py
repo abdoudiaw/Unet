@@ -129,9 +129,11 @@ class SOLPSDataset(Dataset):
 
         # y (normalized if normalizer provided)
         if self.normalizer:
-            y = self.normalizer.transform(Y_raw, mask)                # (C,H,W) normalized
+            y = self.normalizer.transform(Y_raw, mask)  # may return (1,C,H,W)
+            if y.dim() == 4 and y.size(0) == 1:
+                y = y.squeeze(0)                        # -> (C,H,W)
         else:
-            y = Y_raw                                                 # raw; fitter will mask
+            y = Y_raw
 
         if self.inputs == "autoencoder":
             x = y.clone()
