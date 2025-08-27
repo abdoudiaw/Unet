@@ -177,3 +177,163 @@ def plot_training_curves(history, savepath=None, title="Training curves",
         plt.show()
     return fig, axes
 
+ def plot_te_log10(te_ev, mask=None, title='Predicted log10 Te', fname=None):
+     te = np.array(te_ev, dtype=float)
+     te = np.where(te > 0, np.log10(te), np.nan)
+     if mask is not None:
+         m = np.array(mask, dtype=float)
+         if m.ndim == 3:
+             m = m.squeeze()
+         te = np.where(m > 0.5, te, np.nan)
+
+     vmin, vmax = np.nanpercentile(te, [1, 99])
+
+     plt.figure(figsize=(6, 8))
+     im = plt.imshow(te, origin='lower', aspect='auto', vmin=vmin, vmax=vmax)
+     cb = plt.colorbar(im)
+     cb.set_label('log10 Te [eV]')
+     plt.title(title)
+     plt.xlabel('X (pixels)')
+     plt.ylabel('Y (pixels)')
+     if fname:
+         plt.savefig(fname, dpi=200, bbox_inches='tight')
+     plt.show()
+
+#import numpy as np
+#import torch
+#import matplotlib.pyplot as plt
+#from solps_ai.predict import predict_te  # uses norm.inverse to return eV :contentReference[oaicite:2]{index=2}
+
+def show_case_prediction(model, loader, norm, device="cuda",
+                         idx=None, R2d=None, Z2d=None, savepath=None):
+    """
+    Pick a case from `loader` (train/val), run model, and plot:
+      Target Te (eV) | Prediction Te (eV) | |Error| (eV)
+    If R2d/Z2d (cell centers) are given, axes are in meters.
+    Returns: (global_idx, params_scaled, fig)
+    """
+    # unwrap Subset -> underlying SOLPSDataset
+    subset  = loader.dataset                      # torch.utils.data.Subset
+    base_ds = subset.dataset                      # SOLPSDataset with .params, .mask, .Te, .normalizer
+    ids     = subset.indices
+
+    # choose a sample within this split
+    j = np.random.randint(len(ids)) if idx is None else int(idx if idx >= 0 else len(ids) + idx)
+    i = int(ids[j])  # global index into base_ds
+
+    # fetch normalized target & mask from the dataset (returns {"x","y","mask"}) :contentReference[oaicite:3]{index=3}
+    b = base_ds[i]
+    y_norm = b["y"]            # (1,H,W), normalized
+    m_t    = b["mask"]         # (1,H,W)
+    mask   = m_t.squeeze(0).cpu().numpy()  # (H,W)
+
+    # target Te in eV
+    with torch.no_grad():
+        te_target = norm.inverse(y_norm, m_t).squeeze(0).cpu().numpy().astype(np.float32)
+
+    # the SAME scaled params used for training inputs (dataset stores them scaled) :contentReference[oaicite:4]{index=4}
+    params_scaled = base_ds.params[i].astype(np.float32)  # shape (P,)
+
+    # model prediction in eV using your helper (builds [mask, params] internally) :contentReference[oaicite:5]{index=5}
+    te_pred = predict_te(model, norm, mask, params_scaled, device=device, as_numpy=True)
+
+    # error map inside mask
+    err = np.abs(te_pred - te_target) * (mask > 0.5)
+
+    # axes (optional)
+    if R2d is not None and Z2d is not None:
+        H, W = te_pred.shape
+        R_axis = np.linspace(float(R2d.min()), float(R2d.max()), W)
+        Z_axis = np.linspace(float(Z2d.min()), float(Z2d.max()), H)
+        extent = [R_axis[0], R_axis[-1], Z_axis[0], Z_axis[-1]]
+        xlab, ylab = "R [m]", "Z [m]"
+    else:
+        extent = None
+        xlab, ylab = "x", "y"
+
+    # shared color limits for target/pred
+    both = np.where(mask > 0.5, np.stack([te_target, te_pred], 0), np.nan)
+    vmin, vmax = np.nanpercentile(both, [1, 99])
+
+    fig, axes = plt.subplots(1, 3, figsize=(13, 4), constrained_layout=True)
+
+    def _imshow(ax, data, title, vlim=None):
+        d = np.where(mask > 0.5, data, np.nan)
+        im = ax.imshow(d, origin="lower", extent=extent, vmin=None if vlim is None else vlim[0],
+                       vmax=None if vlim is None else vlim[1], aspect="equal")
+        ax.set_title(title); ax.set_xlabel(xlab); ax.set_ylabel(ylab)
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    _imshow(axes[0], te_target, "Target Te (eV)", vlim=(vmin, vmax))
+    _imshow(axes[1], te_pred,   "Prediction Te (eV)", vlim=(vmin, vmax))
+    # error gets its own scale
+    e99 = float(np.nanpercentile(err, 99))
+    _imshow(axes[2], err, "Abs error (eV)", vlim=(0.0, e99))
+
+    P = params_scaled.shape[0]
+    fig.suptitle(f"Dataset case idx={i} (split idx={j})  |  P={P} params", y=1.03, fontsize=12)
+    if savepath:
+        fig.savefig(savepath, dpi=300, bbox_inches="tight")
+    plt.show()
+
+    return i, params_scaled, fig
+
+# import numpy as np
+# from scipy.interpolate import RegularGridInterpolator
+# import matplotlib.pyplot as plt
+
+# # 1) define raster axes (same as Option 1)
+# H, W = Te_map_eV.shape
+# Rmin, Rmax = float(R2d.min()), float(R2d.max())
+# Zmin, Zmax = float(Z2d.min()), float(Z2d.max())
+# R_axis = np.linspace(Rmin, Rmax, W)
+# Z_axis = np.linspace(Zmin, Zmax, H)
+
+# # 2) build interpolator from raster grid -> Te
+# f = RegularGridInterpolator((Z_axis, R_axis), Te_map_eV, bounds_error=False, fill_value=np.nan)
+
+# # 3) sample at SOLPS mesh centers
+# pts = np.stack([Z2d.ravel(), R2d.ravel()], axis=-1)
+# Te_mesh = f(pts).reshape(Z2d.shape)   # (98, 38)
+
+# # 4) make cell corners from centers (robust edge extrapolation)
+# def centers_to_corners(Rc, Zc):
+#     Rc = np.asarray(Rc, float); Zc = np.asarray(Zc, float)
+#     H, W = Rc.shape
+#     # pad by linear extrapolation (one row/col on each side)
+#     Rp = np.empty((H+2, W+2)); Zp = np.empty((H+2, W+2))
+#     Rp[1:-1,1:-1] = Rc; Zp[1:-1,1:-1] = Zc
+#     # rows
+#     Rp[0,1:-1]  = 2*Rc[0,:]   - Rc[1,:]
+#     Rp[-1,1:-1] = 2*Rc[-1,:]  - Rc[-2,:]
+#     Zp[0,1:-1]  = 2*Zc[0,:]   - Zc[1,:]
+#     Zp[-1,1:-1] = 2*Zc[-1,:]  - Zc[-2,:]
+#     # cols
+#     Rp[1:-1,0]  = 2*Rc[:,0]   - Rc[:,1]
+#     Rp[1:-1,-1] = 2*Rc[:,-1]  - Rc[:,-2]
+#     Zp[1:-1,0]  = 2*Zc[:,0]   - Zc[:,1]
+#     Zp[1:-1,-1] = 2*Zc[:,-1]  - Zc[:,-2]
+#     # corners
+#     Rp[0,0]     = 2*Rp[0,1]   - Rp[0,2]
+#     Rp[0,-1]    = 2*Rp[0,-2]  - Rp[0,-3]
+#     Rp[-1,0]    = 2*Rp[-1,1]  - Rp[-1,2]
+#     Rp[-1,-1]   = 2*Rp[-1,-2] - Rp[-1,-3]
+#     Zp[0,0]     = 2*Zp[0,1]   - Zp[0,2]
+#     Zp[0,-1]    = 2*Zp[0,-2]  - Zp[0,-3]
+#     Zp[-1,0]    = 2*Zp[-1,1]  - Zp[-1,2]
+#     Zp[-1,-1]   = 2*Zp[-1,-2] - Zp[-1,-3]
+#     # average 4 neighbors to get (H+1, W+1) corners
+#     Rcorn = 0.25*(Rp[0:-1,0:-1] + Rp[0:-1,1:] + Rp[1:,0:-1] + Rp[1:,1:])
+#     Zcorn = 0.25*(Zp[0:-1,0:-1] + Zp[0:-1,1:] + Zp[1:,0:-1] + Zp[1:,1:])
+#     return Rcorn, Zcorn
+
+# Rcorn, Zcorn = centers_to_corners(R2d, Z2d)
+
+# # 5) plot on the SOLPS mesh
+# vmin, vmax = np.nanpercentile(Te_mesh, [1, 99])
+# plt.figure(figsize=(6,6))
+# pm = plt.pcolormesh(Rcorn, Zcorn, Te_mesh, shading='auto', vmin=vmin, vmax=vmax)
+# cb = plt.colorbar(pm); cb.set_label('Te [eV]')
+# plt.gca().set_aspect('equal', adjustable='box')
+# plt.xlabel('R [m]'); plt.ylabel('Z [m]'); plt.title('Te (eV) on SOLPS mesh')
+# plt.show()
