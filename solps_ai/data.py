@@ -5,87 +5,90 @@ from torch.utils.data import Dataset, DataLoader, Subset
 # ---------- Normalizer ----------
 class MaskedLogStandardizer:
     """
-    Per-channel masked normalizer with automatic log1p for strictly-positive channels.
-    Stores:
-      - mu:    (C,) means in transformed space
-      - sigma: (C,) stds in transformed space
-      - eps: scalar added inside log1p for stability
-      - pos:  (C,) boolean flags: True => use log1p
+    Per-channel masked normalizer.
+    Set self.pos (bool per channel) to force log1p on strictly-positive targets.
     """
     def __init__(self, eps=1.0, sigma_floor=1e-6):
-        self.mu = None
-        self.sigma = None
+        self.mu = None          # (C,)
+        self.sigma = None       # (C,)
         self.eps = float(eps)
         self.sigma_floor = float(sigma_floor)
-        self.pos = None
+        self.pos = None         # (C,) torch.bool; if None we'll detect from data
 
     def _transform_raw(self, y, mask):
-        # y: (B,C,H,W) or (C,H,W); mask: (B,1,H,W) or (1,H,W)
+        # y: (C,H,W) or (B,C,H,W). mask: (1,H,W) or (B,1,H,W)
         if y.dim() == 3: y = y.unsqueeze(0)
-        if mask.dim() == 3: mask = mask.unsqueeze(1)
+        if mask is not None and mask.dim() == 3: mask = mask.unsqueeze(1)
         B, C, H, W = y.shape
-        out = []
+
+        # if not set, detect positive channels on masked pixels
         if self.pos is None:
-            # detect per-channel positivity on masked pixels
             self.pos = torch.zeros(C, dtype=torch.bool, device=y.device)
+            mC = (mask if mask is not None else torch.ones(B,1,H,W, device=y.device)).expand(-1, C, -1, -1)
             for c in range(C):
-                v = y[:, c] if mask is None else y[:, c] * mask[:, 0]
-                mn = torch.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0).min()
-                self.pos[c] = bool(mn > 0)
+                yc = y[:, c]
+                v  = yc[mC[:, c] > 0]
+                if v.numel() > 0:
+                    self.pos[c] = bool(torch.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0).min() > 0)
+
+        out = []
         for c in range(C):
             yc = y[:, c]
-            if self.pos[c]:
+            if bool(self.pos[c]):
                 out.append(torch.log1p(torch.clamp(yc, min=1e-12) + self.eps))
             else:
                 out.append(yc)
-        return torch.stack(out, dim=1)
+        return torch.stack(out, dim=1)  # (B,C,H,W)
 
     def fit(self, loader):
-        sums = None; sums2 = None; count = 0.0
+        """Robust masked fit in float64 to avoid overflow."""
+        import torch
+        sums = None; sums2 = None; count = None
         with torch.no_grad():
             for b in loader:
-                y = b["y"].float()            # (B,C,H,W)
-                m = b["mask"].float()         # (B,1,H,W)
-                yt = self._transform_raw(y, m)  # (B,C,H,W)
+                y = b["y"].to(torch.float64)        # RAW targets (B,C,H,W)
+                m = b["mask"].to(torch.float64)     # (B,1,H,W)
+                yt = self._transform_raw(y, m).to(torch.float64)  # (B,C,H,W)
                 if m.dim() == 3: m = m.unsqueeze(1)
                 mC = m.expand(-1, yt.size(1), -1, -1)
+
+                yt = torch.nan_to_num(yt)
+                mC = torch.nan_to_num(mC)
+
+                s  = (yt * mC).sum(dim=(0,2,3))
+                s2 = (yt * yt * mC).sum(dim=(0,2,3))
+                c  = mC.sum(dim=(0,2,3))
                 if sums is None:
-                    sums  = (yt * mC).sum(dim=(0,2,3))
-                    sums2 = (yt.pow(2) * mC).sum(dim=(0,2,3))
+                    sums, sums2, count = s, s2, c
                 else:
-                    sums  += (yt * mC).sum(dim=(0,2,3))
-                    sums2 += (yt.pow(2) * mC).sum(dim=(0,2,3))
-                count += mC.sum(dim=(0,2,3))
+                    sums += s; sums2 += s2; count += c
+
         count = torch.clamp(count, min=1.0)
-        mu = sums / count
-        var = torch.clamp(sums2 / count - mu**2, min=self.sigma_floor**2)
-        self.mu = mu.cpu()
-        self.sigma = var.sqrt().cpu()
+        mu  = sums / count
+        var = torch.clamp(sums2 / count - mu*mu, min=self.sigma_floor**2)
+
+        self.mu    = mu.to(torch.float32).cpu()
+        self.sigma = var.sqrt().to(torch.float32).cpu()
 
     def transform(self, y, mask):
-        yt = self._transform_raw(y, mask)  # (B,C,H,W) or (C,H,W)
-        if yt.dim() == 3: yt = yt.unsqueeze(0)
-        if mask.dim() == 3: mask = mask.unsqueeze(1)
-        mu = self.mu.to(yt.device).view(1, -1, 1, 1)
-        sg = self.sigma.to(yt.device).view(1, -1, 1, 1)
-        return (yt - mu) / sg
+        yt = self._transform_raw(y, mask)           # (B,C,H,W)
+        mu = torch.nan_to_num(self.mu.to(yt.device)).view(1, -1, 1, 1)
+        sg = torch.nan_to_num(self.sigma.to(yt.device), nan=1.0).view(1, -1, 1, 1)
+        return (yt - mu) / sg                        # (B,C,H,W)
 
     def inverse(self, yN, mask=None):
-        # yN: (B,C,H,W) or (C,H,W)
         if yN.dim() == 3: yN = yN.unsqueeze(0)
-        mu = self.mu.to(yN.device).view(1, -1, 1, 1)
-        sg = self.sigma.to(yN.device).view(1, -1, 1, 1)
-        yt = yN * sg + mu                      # undo z-score per channel
+        mu = torch.nan_to_num(self.mu.to(yN.device)).view(1, -1, 1, 1)
+        sg = torch.nan_to_num(self.sigma.to(yN.device), nan=1.0).view(1, -1, 1, 1)
+        yt = yN * sg + mu
         out = []
         for c in range(yt.size(1)):
             yc = yt[:, c]
-            if self.pos[c]:
+            if bool(self.pos[c]):
                 out.append(torch.expm1(yc) - self.eps)
             else:
                 out.append(yc)
-        y = torch.stack(out, dim=1)
-        return y
-
+        return torch.stack(out, dim=1)               # (B,C,H,W)
 
 # ---------- Dataset ----------
 # data.py
@@ -151,9 +154,6 @@ class SOLPSDataset(Dataset):
 
         return {"x": x, "y": y, "mask": mask}
 
-
-
-
 def fit_param_scaler(raw_params_train):
     x = raw_params_train.astype(np.float64)
     mu  = x.mean(axis=0)
@@ -169,44 +169,60 @@ def apply_param_scaler(dataset, mu, std):
 
 def make_loaders(npz_path, inputs_mode="params", batch_size=16, split=0.85, seed=42,
                  device="cuda" if torch.cuda.is_available() else "cpu"):
-    # raw (no normalization) to compute split & fit normalizer
+    # ---- read once to get channel names ----
+    with np.load(npz_path, allow_pickle=True) as d:
+        target_keys = [str(k) for k in d.get("target_keys", [])]
+
+    # ---- raw dataset (no normalization) for split & fitting ----
     raw_all = SOLPSDataset(npz_path, normalizer=None, inputs=inputs_mode)
     N = len(raw_all)
     idx = np.arange(N); rng = np.random.default_rng(seed); rng.shuffle(idx)
     cut = int(split * N)
     idx_tr, idx_va = idx[:cut], idx[cut:]
 
-    # normalizer on TRAIN only
-    norm = MaskedLogStandardizer(eps=1.0)
-    raw_train = Subset(raw_all, idx_tr)
-    norm.fit(DataLoader(raw_train, batch_size=16, shuffle=False, num_workers=0))
+    # ---- build & configure normalizer ----
+    norm = MaskedLogStandardizer(eps=1.0, sigma_floor=1e-6)
 
-    # datasets WITH normalization
+    # Force log1p for strictly-positive targets (prevents overflow on ne/ni)
+    if target_keys:
+        pos_flags = [k in ("Te", "ne", "ni", "ti") for k in target_keys]
+        norm.pos = torch.tensor(pos_flags, dtype=torch.bool)
+
+    # Fit on TRAIN ONLY (raw targets)
+    raw_train = Subset(raw_all, idx_tr)
+    fit_loader = DataLoader(raw_train, batch_size=32, shuffle=False, num_workers=0)
+    norm.fit(fit_loader)
+
+    # ---- datasets WITH normalization for training/inference ----
     ds_tr = SOLPSDataset(npz_path, normalizer=norm, inputs=inputs_mode)
     ds_va = SOLPSDataset(npz_path, normalizer=norm, inputs=inputs_mode)
 
-    # param scaling if in params mode
+    # ---- parameter scaling (for params-mode inputs) ----
     param_mu = param_std = None
     if inputs_mode != "autoencoder":
         param_mu, param_std = fit_param_scaler(raw_all.params[idx_tr])
         apply_param_scaler(ds_tr, param_mu, param_std)
         apply_param_scaler(ds_va, param_mu, param_std)
 
+    # ---- splits ----
     train_set = Subset(ds_tr, idx_tr)
     val_set   = Subset(ds_va, idx_va)
 
+    # ---- loaders ----
     use_cuda = (str(device) == "cuda")
-    num_w    = 0  # start safe in notebooks; bump to 2 later
+    num_w    = 0
     pin_mem  = use_cuda
     pers_w   = False
 
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True,
-                              num_workers=num_w, pin_memory=pin_mem, persistent_workers=pers_w)
+                              num_workers=num_w, pin_memory=pin_mem, persistent_workers=pers_w, drop_last=True)
     val_loader   = DataLoader(val_set,   batch_size=batch_size, shuffle=False,
                               num_workers=num_w, pin_memory=pin_mem, persistent_workers=pers_w)
 
-    C = train_set[0]["y"].shape[0]   # number of output channels
-    P = (train_set.dataset.params.shape[1] if inputs_mode != "autoencoder" else 0)
-    H, W = train_set[0]["mask"].shape[-2:]
+    # ---- shapes/meta ----
+    sample = train_set[0]
+    C = int(sample["y"].shape[0])                              # number of output channels
+    P = int(train_set.dataset.params.shape[1] if inputs_mode != "autoencoder" else 0)
+    H, W = int(sample["mask"].shape[-2]), int(sample["mask"].shape[-1])
 
     return train_loader, val_loader, norm, P, (H, W), (param_mu, param_std), C
