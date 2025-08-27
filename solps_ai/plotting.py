@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
+from .predict import predict_te  # uses norm.inverse to return eV :contentReference[oaicite:2]{index=2}
 
 def display_random_samples(train_loader, norm, n=4):
     ds = train_loader.dataset                 # this is a Subset
@@ -202,7 +203,6 @@ def plot_te_log10(te_ev, mask=None, title='Predicted log10 Te', fname=None):
 #import numpy as np
 #import torch
 #import matplotlib.pyplot as plt
-#from solps_ai.predict import predict_te  # uses norm.inverse to return eV :contentReference[oaicite:2]{index=2}
 
 def show_case_prediction(model, loader, norm, device="cuda",
                          idx=None, R2d=None, Z2d=None, savepath=None):
