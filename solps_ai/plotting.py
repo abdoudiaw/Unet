@@ -3,36 +3,45 @@ import matplotlib.pyplot as plt
 import torch
 from .predict import predict_te  # uses norm.inverse to return eV :contentReference[oaicite:2]{index=2}
 
-def display_random_samples(train_loader, norm, n=4):
-    ds = train_loader.dataset                 # this is a Subset
+
+def display_random_samples_multi(train_loader, norm, labels=None, channels=None, n=4):
+    """
+    Show n random samples. For each sample, plot mask + (normalized, physical) for each selected channel.
+    labels: list[str] like ['Te','ne','ni',...]; optional
+    channels: list[int] indices to display; default = all channels
+    """
+    ds = train_loader.dataset
     idxs = np.random.choice(len(ds), size=n, replace=False)
 
-    # collect samples
-    ys, ms, te_evs = [], [], []
+    # collect
+    YsN, Ms, YsEV = [], [], []
     for i in idxs:
         b = ds[i]
-        y = b["y"]           # (1,H,W)
-        m = b["mask"]        # (1,H,W)
+        yN = b["y"]           # (C,H,W)
+        m  = b["mask"]        # (1,H,W)
         with torch.no_grad():
-            te_ev = norm.inverse(y.unsqueeze(0), m.unsqueeze(0)).squeeze(0)  # (1,H,W)
-        ys.append(y.squeeze(0).numpy())
-        ms.append(m.squeeze(0).numpy())
-        te_evs.append(te_ev.squeeze(0).numpy())
+            yEV = norm.inverse(yN.unsqueeze(0), m.unsqueeze(0)).squeeze(0)  # (C,H,W)
+        YsN.append(yN.numpy()); Ms.append(m.numpy()); YsEV.append(yEV.numpy())
 
-    ys = np.stack(ys)        # (n,H,W)
-    ms = np.stack(ms)
-    te_evs = np.stack(te_evs)
+    YsN = np.stack(YsN)       # (n,C,H,W)
+    Ms  = np.stack(Ms)        # (n,1,H,W)
+    YsEV= np.stack(YsEV)      # (n,C,H,W)
 
-    # plot
-    fig, axes = plt.subplots(3, n, figsize=(4*n, 10))
-    for j in range(n):
-        axes[0,j].imshow(ms[j], origin='lower'); axes[0,j].set_title(f"Mask idx={idxs[j]}"); axes[0,j].axis('off')
-        im1 = axes[1,j].imshow(np.where(ms[j]>0.5, ys[j], np.nan), origin='lower')
-        axes[1,j].set_title("Target (normalized)"); axes[1,j].axis('off'); fig.colorbar(im1, ax=axes[1,j], fraction=0.046, pad=0.04)
-        im2 = axes[2,j].imshow(np.where(ms[j]>0.5, te_evs[j], np.nan), origin='lower')
-        axes[2,j].set_title("Target Te (eV)"); axes[2,j].axis('off'); fig.colorbar(im2, ax=axes[2,j], fraction=0.046, pad=0.04)
-    plt.suptitle("Random training samples"); plt.tight_layout(); plt.show()
+    C = YsN.shape[1]
+    sel = channels if channels is not None else list(range(C))
+    rows = 1 + 2*len(sel)     # mask row + (norm,phys)*per-channel
 
+    fig, axes = plt.subplots(rows, n, figsize=(4*n, 3.4*rows), squeeze=False)
+    for j,i in enumerate(idxs):
+        m = Ms[j,0]
+        axes[0,j].imshow(m, origin='lower'); axes[0,j].set_title(f"Mask idx={i}"); axes[0,j].axis('off')
+        r = 1
+        for k,c in enumerate(sel):
+            lab = labels[c] if (labels and c < len(labels)) else f"ch{c}"
+            im1 = axes[r,  j].imshow(np.where(m>0.5, YsN[j,c],  np.nan), origin='lower'); axes[r,  j].set_title(f"{lab} (norm)"); axes[r,  j].axis('off'); fig.colorbar(im1, ax=axes[r,  j], fraction=0.046, pad=0.04)
+            im2 = axes[r+1,j].imshow(np.where(m>0.5, YsEV[j,c], np.nan), origin='lower'); axes[r+1,j].set_title(f"{lab} (phys)"); axes[r+1,j].axis('off'); fig.colorbar(im2, ax=axes[r+1,j], fraction=0.046, pad=0.04)
+            r += 2
+    plt.suptitle("Random training samples (multi-channel)"); plt.tight_layout(); plt.show()
 
 
 def _plot_training_curves(history, title="Training"):
@@ -200,159 +209,59 @@ def plot_te_log10(te_ev, mask=None, title='Predicted log10 Te', fname=None):
          plt.savefig(fname, dpi=200, bbox_inches='tight')
      plt.show()
 
-#import numpy as np
-#import torch
-#import matplotlib.pyplot as plt
+# plotting.py (add a new helper)
+from .predict import predict_multi  # requires the small predict.py change from earlier
 
-def show_case_prediction(
-    model, loader, norm, device="cuda", *,
-    idx=None, R2d=None, Z2d=None, savepath=None,
-    param_scaler=None, cmap="viridis"
+def show_case_prediction_multi(
+    model, loader, norm, target_keys=None, channel=0, device="cuda",
+    idx=None, R2d=None, Z2d=None, savepath=None, param_scaler=None, cmap="viridis"
 ):
     """
-    Pick a real sample from `loader` (train/val), run the model, and plot:
-      [Target Te (eV)] | [Prediction Te (eV)] | [|Error| (eV)]
-
-    If R2d/Z2d are provided (cell-center coords), axes are labeled in meters.
-    Returns:
-        (global_idx, params_scaled, params_raw, fig)
+    As show_case_prediction, but choose which output channel to visualize by index or name.
     """
-    # --- resolve underlying dataset + global indices ---
+    if isinstance(channel, str) and target_keys is not None:
+        channel = int(list(target_keys).index(channel))
+
+    # -- fetch a sample (same as your current code) --
     ds = loader.dataset
-    if hasattr(ds, "dataset") and hasattr(ds, "indices"):  # torch.utils.data.Subset
-        base_ds, ids = ds.dataset, ds.indices
-    else:  # already the base dataset
-        base_ds, ids = ds, np.arange(len(ds))
-
-    # pick an example within this split (supports negative idx)
+    base_ds, ids = (ds.dataset, ds.indices) if hasattr(ds, "dataset") else (ds, np.arange(len(ds)))
     j = np.random.randint(len(ids)) if idx is None else int(idx if idx >= 0 else len(ids) + idx)
-    i = int(ids[j])  # global index into base dataset
+    i = int(ids[j])
+    b = base_ds[i]
+    yN = b["y"]; m = b["mask"]
 
-    # --- fetch normalized target + mask ---
-    b = base_ds[i]             # dict with "y","mask",...
-    y_norm = b["y"]            # (1,H,W), normalized
-    m_t    = b["mask"]         # (1,H,W)
-    mask   = m_t.squeeze(0).detach().cpu().numpy().astype(np.float32)  # (H,W)
-
-    # --- target Te in eV ---
     with torch.no_grad():
-        te_target = norm.inverse(y_norm, m_t).squeeze(0).detach().cpu().numpy().astype(np.float32)
-
-    # --- params (scaled, as used by the model) ---
+        yEV = norm.inverse(yN.unsqueeze(0), m.unsqueeze(0)).squeeze(0).cpu().numpy()  # (C,H,W)
+    mask = m.squeeze(0).cpu().numpy()
     params_scaled = None
     if hasattr(base_ds, "params") and base_ds.params is not None:
-        params_scaled = np.asarray(base_ds.params[i], dtype=np.float32)  # shape (P,)
+        params_scaled = np.asarray(base_ds.params[i], dtype=np.float32)
 
-    # optional: unscale to raw physical params
-    params_raw = None
-    if params_scaled is not None and param_scaler is not None and param_scaler[0] is not None:
-        mu, std = param_scaler
-        params_raw = params_scaled * np.asarray(std, np.float32) + np.asarray(mu, np.float32)
+    # -- model prediction for ALL channels in phys units --
+    Ypred = predict_multi(model, norm, mask, params_scaled, device=device, as_numpy=True)  # (C,H,W)
+    target = yEV[channel]; pred = Ypred[channel]; err = np.abs(pred - target) * (mask>0.5)
+    lab = target_keys[channel] if (target_keys is not None) else f"ch{channel}"
 
-    # --- model prediction in eV ---
-    te_pred = predict_te(model, norm, mask, params_scaled, device=device, as_numpy=True)
-
-    # --- error map (inside mask only) ---
-    err = np.abs(te_pred - te_target) * (mask > 0.5)
-
-    # --- axes / extent (optional rectilinear coordinates) ---
+    # -- plotting (unchanged layout) --
+    extent=None; xlab="x"; ylab="y"
     if R2d is not None and Z2d is not None:
-        H, W = te_pred.shape
+        H,W = pred.shape
         R_axis = np.linspace(float(np.min(R2d)), float(np.max(R2d)), W)
         Z_axis = np.linspace(float(np.min(Z2d)), float(np.max(Z2d)), H)
         extent = [R_axis[0], R_axis[-1], Z_axis[0], Z_axis[-1]]
         xlab, ylab = "R [m]", "Z [m]"
-    else:
-        extent = None
-        xlab, ylab = "x", "y"
+    both = np.where(mask>0.5, np.stack([target,pred],0), np.nan)
+    vmin, vmax = np.nanpercentile(both, [1,99]); emax = float(np.nanpercentile(err, 99))
 
-    # --- shared color limits for target/pred ---
-    both = np.where(mask > 0.5, np.stack([te_target, te_pred], 0), np.nan)
-    vmin, vmax = np.nanpercentile(both, [1, 99])
-    emax = float(np.nanpercentile(err, 99))
-
-    fig, axes = plt.subplots(1, 3, figsize=(13, 4), constrained_layout=True)
-
-    def _imshow(ax, data, title, lim=None):
-        d = np.where(mask > 0.5, data, np.nan)
-        im = ax.imshow(
-            d, origin="lower", extent=extent, cmap=cmap,
-            vmin=None if lim is None else lim[0],
-            vmax=None if lim is None else lim[1], aspect="equal"
-        )
-        ax.set_title(title); ax.set_xlabel(xlab); ax.set_ylabel(ylab)
-        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-
-    _imshow(axes[0], te_target, "Target Te (eV)", (vmin, vmax))
-    _imshow(axes[1], te_pred,   "Prediction Te (eV)", (vmin, vmax))
-    _imshow(axes[2], err,       "Abs error (eV)", (0.0, emax))
-
-    P = 0 if params_scaled is None else int(params_scaled.shape[0])
-    fig.suptitle(f"Dataset case idx={i} (split idx={j})  |  P={P} params", y=1.03, fontsize=12)
-
-    if savepath:
-        fig.savefig(savepath, dpi=300, bbox_inches="tight")
+    fig, axes = plt.subplots(1,3, figsize=(13,4), constrained_layout=True)
+    def _im(ax, data, title, lim=None):
+        d = np.where(mask>0.5, data, np.nan)
+        im = ax.imshow(d, origin="lower", extent=extent, cmap=cmap,
+                       vmin=None if lim is None else lim[0], vmax=None if lim is None else lim[1], aspect="equal")
+        ax.set_title(title); ax.set_xlabel(xlab); ax.set_ylabel(ylab); fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    _im(axes[0], target, f"Target {lab}", (vmin,vmax))
+    _im(axes[1], pred,   f"Prediction {lab}", (vmin,vmax))
+    _im(axes[2], err,    f"|Error| {lab}", (0.0, emax))
+    if savepath: fig.savefig(savepath, dpi=300, bbox_inches="tight")
     plt.show()
-
-    return i, params_scaled, params_raw, fig
-
-
-# import numpy as np
-# from scipy.interpolate import RegularGridInterpolator
-# import matplotlib.pyplot as plt
-
-# # 1) define raster axes (same as Option 1)
-# H, W = Te_map_eV.shape
-# Rmin, Rmax = float(R2d.min()), float(R2d.max())
-# Zmin, Zmax = float(Z2d.min()), float(Z2d.max())
-# R_axis = np.linspace(Rmin, Rmax, W)
-# Z_axis = np.linspace(Zmin, Zmax, H)
-
-# # 2) build interpolator from raster grid -> Te
-# f = RegularGridInterpolator((Z_axis, R_axis), Te_map_eV, bounds_error=False, fill_value=np.nan)
-
-# # 3) sample at SOLPS mesh centers
-# pts = np.stack([Z2d.ravel(), R2d.ravel()], axis=-1)
-# Te_mesh = f(pts).reshape(Z2d.shape)   # (98, 38)
-
-# # 4) make cell corners from centers (robust edge extrapolation)
-# def centers_to_corners(Rc, Zc):
-#     Rc = np.asarray(Rc, float); Zc = np.asarray(Zc, float)
-#     H, W = Rc.shape
-#     # pad by linear extrapolation (one row/col on each side)
-#     Rp = np.empty((H+2, W+2)); Zp = np.empty((H+2, W+2))
-#     Rp[1:-1,1:-1] = Rc; Zp[1:-1,1:-1] = Zc
-#     # rows
-#     Rp[0,1:-1]  = 2*Rc[0,:]   - Rc[1,:]
-#     Rp[-1,1:-1] = 2*Rc[-1,:]  - Rc[-2,:]
-#     Zp[0,1:-1]  = 2*Zc[0,:]   - Zc[1,:]
-#     Zp[-1,1:-1] = 2*Zc[-1,:]  - Zc[-2,:]
-#     # cols
-#     Rp[1:-1,0]  = 2*Rc[:,0]   - Rc[:,1]
-#     Rp[1:-1,-1] = 2*Rc[:,-1]  - Rc[:,-2]
-#     Zp[1:-1,0]  = 2*Zc[:,0]   - Zc[:,1]
-#     Zp[1:-1,-1] = 2*Zc[:,-1]  - Zc[:,-2]
-#     # corners
-#     Rp[0,0]     = 2*Rp[0,1]   - Rp[0,2]
-#     Rp[0,-1]    = 2*Rp[0,-2]  - Rp[0,-3]
-#     Rp[-1,0]    = 2*Rp[-1,1]  - Rp[-1,2]
-#     Rp[-1,-1]   = 2*Rp[-1,-2] - Rp[-1,-3]
-#     Zp[0,0]     = 2*Zp[0,1]   - Zp[0,2]
-#     Zp[0,-1]    = 2*Zp[0,-2]  - Zp[0,-3]
-#     Zp[-1,0]    = 2*Zp[-1,1]  - Zp[-1,2]
-#     Zp[-1,-1]   = 2*Zp[-1,-2] - Zp[-1,-3]
-#     # average 4 neighbors to get (H+1, W+1) corners
-#     Rcorn = 0.25*(Rp[0:-1,0:-1] + Rp[0:-1,1:] + Rp[1:,0:-1] + Rp[1:,1:])
-#     Zcorn = 0.25*(Zp[0:-1,0:-1] + Zp[0:-1,1:] + Zp[1:,0:-1] + Zp[1:,1:])
-#     return Rcorn, Zcorn
-
-# Rcorn, Zcorn = centers_to_corners(R2d, Z2d)
-
-# # 5) plot on the SOLPS mesh
-# vmin, vmax = np.nanpercentile(Te_mesh, [1, 99])
-# plt.figure(figsize=(6,6))
-# pm = plt.pcolormesh(Rcorn, Zcorn, Te_mesh, shading='auto', vmin=vmin, vmax=vmax)
-# cb = plt.colorbar(pm); cb.set_label('Te [eV]')
-# plt.gca().set_aspect('equal', adjustable='box')
-# plt.xlabel('R [m]'); plt.ylabel('Z [m]'); plt.title('Te (eV) on SOLPS mesh')
-# plt.show()
+    return i, params_scaled, fig

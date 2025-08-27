@@ -4,42 +4,87 @@ from torch.utils.data import Dataset, DataLoader, Subset
 
 # ---------- Normalizer ----------
 class MaskedLogStandardizer:
+    """
+    Per-channel masked normalizer with automatic log1p for strictly-positive channels.
+    Stores:
+      - mu:    (C,) means in transformed space
+      - sigma: (C,) stds in transformed space
+      - eps: scalar added inside log1p for stability
+      - pos:  (C,) boolean flags: True => use log1p
+    """
     def __init__(self, eps=1.0, sigma_floor=1e-6):
-        self.mu = None; self.sigma = None; self.eps = float(eps)
+        self.mu = None
+        self.sigma = None
+        self.eps = float(eps)
         self.sigma_floor = float(sigma_floor)
+        self.pos = None
+
+    def _transform_raw(self, y, mask):
+        # y: (B,C,H,W) or (C,H,W); mask: (B,1,H,W) or (1,H,W)
+        if y.dim() == 3: y = y.unsqueeze(0)
+        if mask.dim() == 3: mask = mask.unsqueeze(1)
+        B, C, H, W = y.shape
+        out = []
+        if self.pos is None:
+            # detect per-channel positivity on masked pixels
+            self.pos = torch.zeros(C, dtype=torch.bool, device=y.device)
+            for c in range(C):
+                v = y[:, c] if mask is None else y[:, c] * mask[:, 0]
+                mn = torch.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0).min()
+                self.pos[c] = bool(mn > 0)
+        for c in range(C):
+            yc = y[:, c]
+            if self.pos[c]:
+                out.append(torch.log1p(torch.clamp(yc, min=1e-12) + self.eps))
+            else:
+                out.append(yc)
+        return torch.stack(out, dim=1)
 
     def fit(self, loader):
-        sums = 0.0; sums2 = 0.0; count = 0.0
+        sums = None; sums2 = None; count = 0.0
         with torch.no_grad():
             for b in loader:
-                y = b["y"].float()
-                m = b["mask"].float()
-                y = torch.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
-                z = torch.log1p(torch.clamp(y, min=0) + self.eps)
-                z = torch.where(torch.isfinite(z), z, torch.zeros_like(z))
-                z = z*m
-                sums  += z.sum().item()
-                sums2 += (z*z).sum().item()
-                count += m.sum().item()
-        if count <= 0:
-            raise RuntimeError("Normalizer.fit(): mask has zero valid pixels.")
-        self.mu = sums / count
-        var = max(sums2 / count - self.mu**2, 0.0)
-        self.sigma = float(max(var**0.5, self.sigma_floor))
-        print(f"[normalizer] mu={self.mu:.6g} sigma={self.sigma:.6g} count={int(count)}")
+                y = b["y"].float()            # (B,C,H,W)
+                m = b["mask"].float()         # (B,1,H,W)
+                yt = self._transform_raw(y, m)  # (B,C,H,W)
+                if m.dim() == 3: m = m.unsqueeze(1)
+                mC = m.expand(-1, yt.size(1), -1, -1)
+                if sums is None:
+                    sums  = (yt * mC).sum(dim=(0,2,3))
+                    sums2 = (yt.pow(2) * mC).sum(dim=(0,2,3))
+                else:
+                    sums  += (yt * mC).sum(dim=(0,2,3))
+                    sums2 += (yt.pow(2) * mC).sum(dim=(0,2,3))
+                count += mC.sum(dim=(0,2,3))
+        count = torch.clamp(count, min=1.0)
+        mu = sums / count
+        var = torch.clamp(sums2 / count - mu**2, min=self.sigma_floor**2)
+        self.mu = mu.cpu()
+        self.sigma = var.sqrt().cpu()
 
     def transform(self, y, mask):
-        y = torch.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
-        z = torch.log1p(torch.clamp(y, min=0) + self.eps)
-        z = (z - self.mu) / (self.sigma + 1e-8)
-        z = torch.where(torch.isfinite(z), z, torch.zeros_like(z))
-        return z * mask
+        yt = self._transform_raw(y, mask)  # (B,C,H,W) or (C,H,W)
+        if yt.dim() == 3: yt = yt.unsqueeze(0)
+        if mask.dim() == 3: mask = mask.unsqueeze(1)
+        mu = self.mu.to(yt.device).view(1, -1, 1, 1)
+        sg = self.sigma.to(yt.device).view(1, -1, 1, 1)
+        return (yt - mu) / sg
 
-    def inverse(self, y_norm, mask=None):
-        z = y_norm * (self.sigma + 1e-8) + self.mu
-        y = torch.expm1(z) - self.eps
-        y = torch.where(torch.isfinite(y), y, torch.zeros_like(y))
-        return y if mask is None else y * mask
+    def inverse(self, yN, mask=None):
+        # yN: (B,C,H,W) or (C,H,W)
+        if yN.dim() == 3: yN = yN.unsqueeze(0)
+        mu = self.mu.to(yN.device).view(1, -1, 1, 1)
+        sg = self.sigma.to(yN.device).view(1, -1, 1, 1)
+        yt = yN * sg + mu                      # undo z-score per channel
+        out = []
+        for c in range(yt.size(1)):
+            yc = yt[:, c]
+            if self.pos[c]:
+                out.append(torch.expm1(yc) - self.eps)
+            else:
+                out.append(yc)
+        y = torch.stack(out, dim=1)
+        return y
 
 
 # ---------- Dataset ----------
@@ -62,23 +107,35 @@ class SOLPSDataset(Dataset):
         return self.Te.shape[0]
 
     def __getitem__(self, idx):
-        Te_raw = torch.from_numpy(self.Te[idx]).unsqueeze(0).float()   # (1,H,W)
-        mask   = torch.from_numpy(self.mask[idx]).unsqueeze(0).float() # (1,H,W)
-        mask   = (mask > 0.5).float()
+        # load arrays
+        Y_raw = torch.from_numpy(self.Y[idx]).float()          # (C,H,W)
+        mask  = torch.from_numpy(self.mask[idx]).unsqueeze(0).float()  # (1,H,W)
+        mask  = (mask > 0.5).float()
 
-        Te_raw = torch.nan_to_num(Te_raw, nan=0.0, posinf=0.0, neginf=0.0)
-        Te_roi = Te_raw * mask
-        y = self.normalizer.transform(Te_raw, mask) if self.normalizer else Te_roi
+        # clean NaNs/infs
+        Y_raw = torch.nan_to_num(Y_raw, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # normalized targets (per-channel, masked)
+        y = self.normalizer.transform(Y_raw, mask) if self.normalizer else (Y_raw * mask)
 
         if self.inputs == "autoencoder":
             x = y.clone()
         else:
-            params = torch.from_numpy(self.params[idx]).float()
-            P = params.numel()
+            # inputs = [mask, params, optional coords...]
             H, W = mask.shape[-2:]
-            x = torch.cat([mask, params.view(P,1,1).expand(P,H,W)], dim=0) if P else mask
+            xs = [mask]  # (1,H,W)
+            if self.include_coords:
+                # cheap positional encodings
+                grid_r = torch.linspace(0, 1, W).view(1, 1, 1, W).expand(1, 1, H, W)
+                grid_z = torch.linspace(0, 1, H).view(1, 1, H, 1).expand(1, 1, H, W)
+                xs += [grid_r, grid_z]
+            if self.params is not None:
+                p = torch.from_numpy(self.params[idx]).view(-1, 1, 1).float().expand(-1, H, W)
+                xs.append(p)
+            x = torch.cat(xs, dim=0)  # (1+extras+P, H, W)
 
         return {"x": x, "y": y, "mask": mask}
+
 
 def fit_param_scaler(raw_params_train):
     x = raw_params_train.astype(np.float64)
@@ -131,8 +188,8 @@ def make_loaders(npz_path, inputs_mode="params", batch_size=16, split=0.85, seed
     val_loader   = DataLoader(val_set,   batch_size=batch_size, shuffle=False,
                               num_workers=num_w, pin_memory=pin_mem, persistent_workers=pers_w)
 
-    P = train_set.dataset.params.shape[1] if inputs_mode != "autoencoder" else 0
+    C = train_set[0]["y"].shape[0]   # number of output channels
+    P = (train_set.dataset.params.shape[1] if inputs_mode != "autoencoder" else 0)
     H, W = train_set[0]["mask"].shape[-2:]
 
-    return train_loader, val_loader, norm, P, (H, W), (param_mu, param_std)
-
+    return train_loader, val_loader, norm, P, (H, W), (param_mu, param_std), C
