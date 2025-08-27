@@ -1,9 +1,13 @@
+import numpy as np
 import torch
 from .losses import masked_weighted_loss, mae_norm, batch_error_sums_ev, edge_weights
 
-def train_unet(train_loader, val_loader, norm, in_ch, device, inputs_mode="params",
-               lam_grad=0.2, lam_w=1.0, lam_ev=0.0, epochs=10, base=32,
-               param_scaler=None, model_cls=None, save_path="unet_best.pt"):
+def train_unet(
+    train_loader, val_loader, norm, in_ch, device, *,
+    inputs_mode="params", lam_grad=0.2, lam_w=1.0, lam_ev=0.0,
+    epochs=10, base=32, param_scaler=None, model_cls=None,
+    save_path="unet_best.pt", return_history: bool = True, history_path: str | None = None
+):
     """
     param_scaler: (mu, std) or None, to store for inference
     model_cls: a constructor like lambda in_ch,out_ch: UNet(in_ch, out_ch, base)
@@ -15,16 +19,23 @@ def train_unet(train_loader, val_loader, norm, in_ch, device, inputs_mode="param
     model = model_cls(in_ch, 1).to(device)
     opt   = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-    # AMP (new API)
+    # AMP
     use_cuda  = (str(device) == "cuda")
     use_amp   = use_cuda
-    amp_dtype = torch.bfloat16 if (use_cuda and torch.cuda.is_bf16_supported()) else torch.float16
+    amp_dtype = torch.bfloat16 if (use_cuda and getattr(torch.cuda, "is_bf16_supported", lambda: False)()) else torch.float16
     scaler    = torch.amp.GradScaler('cuda', enabled=use_amp)
 
     # weight map from first sample
     m0 = train_loader.dataset[0]["mask"]  # (1,H,W) CPU
     w_map = edge_weights(m0.numpy()[0], sigma_px=3.0)
     w_map = torch.from_numpy(w_map).to(device).unsqueeze(0).unsqueeze(0)
+
+    # history containers
+    history = {
+        "tr_mse": [], "tr_maeN": [],
+        "va_mse": [], "va_maeN": [],
+        "va_mae_eV": [], "va_rmse_eV": []
+    }
 
     best_val = float("inf")
     for epoch in range(epochs):
@@ -37,19 +48,22 @@ def train_unet(train_loader, val_loader, norm, in_ch, device, inputs_mode="param
 
             with torch.amp.autocast('cuda', enabled=use_amp, dtype=amp_dtype):
                 p = model(x)
-                loss_base = masked_weighted_loss(p, y, m, w=w_map, lam_grad=lam_grad, lam_w=lam_w)
+                # ensure dtype match for weighted loss under autocast
+                loss_base = masked_weighted_loss(p, y, m, w=w_map.to(p.dtype), lam_grad=lam_grad, lam_w=lam_w)
 
-            if lam_ev > 0:
-                p_ev = norm.inverse(p.float(), m.float()); y_ev = norm.inverse(y.float(), m.float())
-                loss_ev = ((p_ev - y_ev).abs()*m.float()).sum() / m.sum().clamp_min(1e-8)
-                loss = loss_base + lam_ev * loss_ev
-            else:
-                loss = loss_base
+                if lam_ev > 0:
+                    p_ev = norm.inverse(p.float(), m.float())
+                    y_ev = norm.inverse(y.float(), m.float())
+                    loss_ev = ((p_ev - y_ev).abs() * m.float()).sum() / m.sum().clamp_min(1e-8)
+                    loss = loss_base + lam_ev * loss_ev
+                else:
+                    loss = loss_base
 
             scaler.scale(loss).backward()
             scaler.unscale_(opt)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            scaler.step(opt); scaler.update()
+            scaler.step(opt)
+            scaler.update()
 
             with torch.no_grad():
                 px = float(m.sum().item())
@@ -69,11 +83,13 @@ def train_unet(train_loader, val_loader, norm, in_ch, device, inputs_mode="param
                 x, y, m = b["x"].to(device), b["y"].to(device), b["mask"].to(device)
                 with torch.amp.autocast('cuda', enabled=use_amp, dtype=amp_dtype):
                     p = model(x)
-                    loss_b = masked_weighted_loss(p, y, m, w=w_map, lam_grad=lam_grad, lam_w=lam_w)
+                    loss_b = masked_weighted_loss(p, y, m, w=w_map.to(p.dtype), lam_grad=lam_grad, lam_w=lam_w)
+
                 px = float(m.sum().item())
                 va_loss_sum += float(loss_b.item()) * px
                 va_maeN_sum += float(mae_norm(p.float(), y.float(), m.float()).item()) * px
                 va_px       += px
+
                 abs_sum, sq_sum, _ = batch_error_sums_ev(p.float(), y.float(), m.float(), norm)
                 va_abs_ev_sum += float(abs_sum.item())
                 va_sq_ev_sum  += float(sq_sum.item())
@@ -83,11 +99,22 @@ def train_unet(train_loader, val_loader, norm, in_ch, device, inputs_mode="param
         va_MAE_eV  = va_abs_ev_sum / max(va_px, 1.0)
         va_RMSE_eV = (va_sq_ev_sum / max(va_px, 1.0)) ** 0.5
 
-        print(f"epoch {epoch:02d} | "
-              f"train MSE {tr_loss:.4f}  MAE_norm {tr_maeN:.4f} | "
-              f"val MSE {va_loss:.4f}  MAE_norm {va_maeN:.4f} | "
-              f"val MAE {va_MAE_eV:.2f} eV  RMSE {va_RMSE_eV:.2f} eV")
+        # ---- record history ----
+        history["tr_mse"].append(tr_loss)
+        history["tr_maeN"].append(tr_maeN)
+        history["va_mse"].append(va_loss)
+        history["va_maeN"].append(va_maeN)
+        history["va_mae_eV"].append(va_MAE_eV)
+        history["va_rmse_eV"].append(va_RMSE_eV)
 
+        print(
+            f"epoch {epoch:02d} | "
+            f"train MSE {tr_loss:.4f}  MAE_norm {tr_maeN:.4f} | "
+            f"val MSE {va_loss:.4f}  MAE_norm {va_maeN:.4f} | "
+            f"val MAE {va_MAE_eV:.2f} eV  RMSE {va_RMSE_eV:.2f} eV"
+        )
+
+        # ---- checkpoint best ----
         if va_loss < best_val:
             best_val = va_loss
             ckpt = {
@@ -103,5 +130,9 @@ def train_unet(train_loader, val_loader, norm, in_ch, device, inputs_mode="param
                     ckpt["param_std"] = std.tolist() if hasattr(std, "tolist") else std
             torch.save(ckpt, save_path)
 
-    return model
+    # optional persist of history
+    if history_path is not None:
+        np.savez(history_path, **history)
+
+    return (model, history) if return_history else model
 
