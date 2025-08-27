@@ -10,7 +10,9 @@ def train_unet(
     epochs=10, base=32, param_scaler=None, model_cls=None,
     save_path="unet_best.pt", return_history: bool = True, history_path: str | None = None,
     lr_init: float = 1e-3, lr_factor: float = 0.5, lr_patience: int = 5, lr_min: float = 1e-5,
-    lr_threshold: float = 1e-4
+    lr_threshold: float = 1e-4,
+    verbose: bool = True,                 # <— NEW
+    print_every: int = 1                  # <— NEW
 ):
     model_cls = model_cls or (lambda ic, oc: UNet(in_ch=ic, out_ch=oc, base=base))
 
@@ -50,6 +52,7 @@ def train_unet(
 
     history = {"tr_mse": [], "tr_maeN": [], "va_mse": [], "va_maeN": [], "va_mae_eV": [], "va_rmse_eV": []}
     best_val = float("inf")
+    best_epoch = -1                       # <— NEW
 
     for epoch in range(epochs):
         # ---- train ----
@@ -100,10 +103,22 @@ def train_unet(
         history["va_rmse_eV"].append(va_rmse_eV)
 
         sch.step(va_mse)
-
+        # ------- PRINT PROGRESS -------  # <— NEW
+        if verbose and ((epoch + 1) % print_every == 0 or epoch == 0):
+            lr_now = opt.param_groups[0]["lr"]
+            print(
+                f"epoch {epoch:02d} | "
+                f"train MSE {history['tr_mse'][-1]:.4f}  MAE_norm {history['tr_maeN'][-1]:.4f} | "
+                f"val MSE {va_mse:.4f}  MAE_norm {va_maeN:.4f} | "
+                f"val MAE {va_mae_eV:.2e} eV  RMSE {va_rmse_eV:.2e} eV | "
+                f"lr {lr_now:.2e}",
+                flush=True
+            )
         # ---- checkpoint best ----
         if va_mse < best_val:
             best_val = va_mse
+            best_epoch = epoch                   # <— NEW
+
             ckpt = {
                 "model": model.state_dict(),
                 "in_ch": in_ch,
@@ -116,6 +131,9 @@ def train_unet(
                     ckpt["param_mu"]  = mu.tolist() if hasattr(mu, "tolist") else mu
                     ckpt["param_std"] = std.tolist() if hasattr(std, "tolist") else std
             torch.save(ckpt, save_path)
+
+    if verbose:                                  # <— NEW
+            print(f"best @ epoch {best_epoch}  (val MSE={best_val:.4f})", flush=True)
 
     if history_path is not None:
         np.savez(history_path, **history)
