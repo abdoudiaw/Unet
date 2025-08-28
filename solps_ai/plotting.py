@@ -408,100 +408,6 @@ from matplotlib.colors import LogNorm
 import torch
 from .predict import predict_multi
 
-# def _maybe_unlog(arr, do_unlog, clip=(-50.0, 50.0)):
-#     """Safely convert log10 -> linear if requested."""
-#     if not do_unlog:
-#         return arr
-#     a = np.clip(arr, clip[0], clip[1])      # avoid overflow in 10**x
-#     return np.power(10.0, a)
-
-# def gather_flat_true_pred(
-#     model, loader, norm, target_keys, device="cuda",
-#     max_samples=6, data_is_log10_map=None  # dict like {"Te":False,"Ti":False,"ni":True,"ne":True}
-# ):
-#     if data_is_log10_map is None:
-#         data_is_log10_map = {k: False for k in target_keys}
-
-#     got = {k: ([], []) for k in target_keys}
-#     ds = loader.dataset
-#     base_ds, ids = (ds.dataset, ds.indices) if hasattr(ds, "dataset") else (ds, np.arange(len(ds)))
-#     picks = np.random.choice(len(ids), size=min(max_samples, len(ids)), replace=False)
-
-#     for j in picks:
-#         i = int(ids[j]); b = base_ds[i]
-#         yN, m = b["y"], b["mask"]
-#         with torch.no_grad():
-#             y_phys = norm.inverse(yN.unsqueeze(0), m.unsqueeze(0)).squeeze(0).cpu().numpy()  # (C,H,W)
-#         mask = (m.squeeze(0).cpu().numpy() > 0.5)
-
-#         params_scaled = getattr(base_ds, "params", None)
-#         params_scaled = None if params_scaled is None else np.asarray(params_scaled[i], dtype=np.float32)
-#         Ypred = predict_multi(model, norm, mask.astype(np.float32), params_scaled, device=device, as_numpy=True)
-
-#         for k, name in enumerate(target_keys):
-#             t = y_phys[k][mask]
-#             p = Ypred[k][mask]
-
-#             # un-log only if this channel is stored in log10
-#             do_unlog = bool(data_is_log10_map.get(name, False))
-#             t = _maybe_unlog(t, do_unlog)
-#             p = _maybe_unlog(p, do_unlog)
-
-#             good = np.isfinite(t) & np.isfinite(p)
-#             if good.any():
-#                 got[name][0].append(t[good])
-#                 got[name][1].append(p[good])
-
-#     for name in target_keys:
-#         tt = np.concatenate(got[name][0]) if got[name][0] else np.array([])
-#         pp = np.concatenate(got[name][1]) if got[name][1] else np.array([])
-#         got[name] = (tt, pp)
-#     return got
-
-# def plot_pred_vs_true_hex(t, p, name="Te", unit="eV", gridsize=80, savepath=None):
-#     if t.size == 0:
-#         raise ValueError(f"No data to plot for {name} (after masking/finite filter)")
-#     mae = float(np.mean(np.abs(p - t)))
-#     nmae = float(mae / (np.mean(np.abs(t)) + 1e-12) * 100.0)
-#     ss_res = float(np.sum((p - t) ** 2))
-#     ss_tot = float(np.sum((t - np.mean(t)) ** 2) + 1e-12)
-#     r2 = 1.0 - ss_res / ss_tot
-
-#     fig, ax = plt.subplots(figsize=(6.2, 4.2))
-#     hb = ax.hexbin(t, p, gridsize=gridsize, norm=LogNorm(), mincnt=1)
-#     lim = np.nanpercentile(np.concatenate([t, p]), [0.5, 99.5])
-#     lo, hi = float(lim[0]), float(lim[1])
-#     ax.plot([lo, hi], [lo, hi], 'k--', lw=1, alpha=0.7)
-#     ax.set_xlim(lo, hi); ax.set_ylim(lo, hi)
-#     ax.set_xlabel(f"SOLPS-ITER: {name} ({unit})")
-#     ax.set_ylabel(f"UNet: {name} ({unit})")
-#     cbar = fig.colorbar(hb, ax=ax); cbar.set_label("log10(count)")
-#     ax.set_title(f"MAE={mae:.2g} {unit} | NMAE={nmae:.1f}% | R²={r2:.3f}")
-#     ax.grid(True, alpha=0.25)
-#     if savepath:
-#         fig.savefig(savepath, dpi=300, bbox_inches="tight")
-#     plt.show()
-#     return {"MAE": mae, "NMAE": nmae, "R2": r2}
-
-# def plot_all_channels_scatter(
-#     model, loader, norm, *, device="cuda",
-#     target_keys=("Te","Ti","ni","ne"),
-#     units={"Te":"eV","Ti":"eV","ni":"m⁻³","ne":"m⁻³"},
-#     data_is_log10_map=None,  # per-channel
-#     max_samples=6, gridsize=80, save_prefix=None
-# ):
-#     gathered = gather_flat_true_pred(
-#         model, loader, norm, list(target_keys),
-#         device=device, max_samples=max_samples,
-#         data_is_log10_map=data_is_log10_map
-#     )
-#     metrics = {}
-#     for name in target_keys:
-#         t, p = gathered[name]
-#         sp = f"{save_prefix}_{name}.png" if save_prefix else None
-#         metrics[name] = plot_pred_vs_true_hex(t, p, name=name, unit=units.get(name, ""), gridsize=gridsize, savepath=sp)
-#     return metrics
-# plotting.py  (patched parts)
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -623,3 +529,38 @@ def plot_all_channels_scatter(
         metrics[name] = plot_pred_vs_true_hex(t, p, name=name, unit=units.get(name, ""), gridsize=gridsize, savepath=sp)
     return metrics
 
+
+def diag_channel(t, p, name, unit):
+    t = t.astype(np.float64); p = p.astype(np.float64)
+    good = np.isfinite(t) & np.isfinite(p)
+    t, p = t[good], p[good]
+
+    # metrics
+    mae  = np.mean(np.abs(p - t))
+    nmae = mae / (np.mean(np.abs(t)) + 1e-12) * 100
+    # linear fit p ≈ a + b t
+    b, a = np.polyfit(t, p, deg=1)
+    r = np.corrcoef(t, p)[0,1]
+    print(f"{name:>2}: MAE={mae:.3g} {unit}, NMAE={nmae:.2f}%, slope={b:.3f}, intercept={a:.2f}, r={r:.3f}")
+
+    # error vs. target magnitude (deciles)
+    qs  = np.quantile(t, np.linspace(0,1,11))
+    mids, nmae_bins = [], []
+    for q0, q1 in zip(qs[:-1], qs[1:]):
+        sel = (t>=q0) & (t<=q1)
+        if sel.any():
+            mids.append(0.5*(q0+q1))
+            nmae_bins.append(np.mean(np.abs(p[sel]-t[sel]))/(np.mean(np.abs(t[sel]))+1e-12)*100)
+    plt.figure(figsize=(5,3))
+    plt.plot(mids, nmae_bins, ".-")
+    plt.title(f"{name}: NMAE vs target quantile")
+    plt.xlabel(f"{name} ({unit})"); plt.ylabel("NMAE [%]"); plt.grid(alpha=0.3)
+    plt.show()
+
+    # residual vs target
+    plt.figure(figsize=(5,3))
+    plt.hexbin(t, p-t, gridsize=80, mincnt=1)
+    plt.axhline(0, ls="--", c="k", lw=1)
+    plt.xlabel(f"True {name} ({unit})"); plt.ylabel("Residual (pred-true)")
+    plt.title(f"{name}: residual vs true"); plt.colorbar(label="log10(count)")
+    plt.show()
