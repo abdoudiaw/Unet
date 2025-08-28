@@ -209,63 +209,6 @@ def plot_te_log10(te_ev, mask=None, title='Predicted log10 Te', fname=None):
          plt.savefig(fname, dpi=200, bbox_inches='tight')
      plt.show()
 
-## plotting.py (add a new helper)
-#from .predict import predict_multi  # requires the small predict.py change from earlier
-#
-#def show_case_prediction_multi(
-#    model, loader, norm, target_keys=None, channel=0, device="cuda",
-#    idx=None, R2d=None, Z2d=None, savepath=None, param_scaler=None, cmap="viridis"
-#):
-#    """
-#    As show_case_prediction, but choose which output channel to visualize by index or name.
-#    """
-#    if isinstance(channel, str) and target_keys is not None:
-#        channel = int(list(target_keys).index(channel))
-#
-#    # -- fetch a sample (same as your current code) --
-#    ds = loader.dataset
-#    base_ds, ids = (ds.dataset, ds.indices) if hasattr(ds, "dataset") else (ds, np.arange(len(ds)))
-#    j = np.random.randint(len(ids)) if idx is None else int(idx if idx >= 0 else len(ids) + idx)
-#    i = int(ids[j])
-#    b = base_ds[i]
-#    yN = b["y"]; m = b["mask"]
-#
-#    with torch.no_grad():
-#        yEV = norm.inverse(yN.unsqueeze(0), m.unsqueeze(0)).squeeze(0).cpu().numpy()  # (C,H,W)
-#    mask = m.squeeze(0).cpu().numpy()
-#    params_scaled = None
-#    if hasattr(base_ds, "params") and base_ds.params is not None:
-#        params_scaled = np.asarray(base_ds.params[i], dtype=np.float32)
-#
-#    # -- model prediction for ALL channels in phys units --
-#    Ypred = predict_multi(model, norm, mask, params_scaled, device=device, as_numpy=True)  # (C,H,W)
-#    target = yEV[channel]; pred = Ypred[channel]; err = np.abs(pred - target) * (mask>0.5)
-#    lab = target_keys[channel] if (target_keys is not None) else f"ch{channel}"
-#
-#    # -- plotting (unchanged layout) --
-#    extent=None; xlab="x"; ylab="y"
-#    if R2d is not None and Z2d is not None:
-#        H,W = pred.shape
-#        R_axis = np.linspace(float(np.min(R2d)), float(np.max(R2d)), W)
-#        Z_axis = np.linspace(float(np.min(Z2d)), float(np.max(Z2d)), H)
-#        extent = [R_axis[0], R_axis[-1], Z_axis[0], Z_axis[-1]]
-#        xlab, ylab = "R [m]", "Z [m]"
-#    both = np.where(mask>0.5, np.stack([target,pred],0), np.nan)
-#    vmin, vmax = np.nanpercentile(both, [1,99]); emax = float(np.nanpercentile(err, 99))
-#
-#    fig, axes = plt.subplots(1,3, figsize=(13,4), constrained_layout=True)
-#    def _im(ax, data, title, lim=None):
-#        d = np.where(mask>0.5, data, np.nan)
-#        im = ax.imshow(d, origin="lower", extent=extent, cmap=cmap,
-#                       vmin=None if lim is None else lim[0], vmax=None if lim is None else lim[1], aspect="equal")
-#        ax.set_title(title); ax.set_xlabel(xlab); ax.set_ylabel(ylab); fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-#    _im(axes[0], target, f"Target {lab}", (vmin,vmax))
-#    _im(axes[1], pred,   f"Prediction {lab}", (vmin,vmax))
-#    _im(axes[2], err,    f"|Error| {lab}", (0.0, emax))
-#    if savepath: fig.savefig(savepath, dpi=300, bbox_inches="tight")
-#    plt.show()
-#    return i, params_scaled, fig
-
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
@@ -347,7 +290,7 @@ def show_case_prediction_grid(
             imh = ax.imshow(data, origin="lower", extent=extent, cmap=cmap,
                             vmin=lim[0] if lim else None, vmax=lim[1] if lim else None,
                             aspect="equal")
-            ax.set_title(title + " (log₁₀)")
+            ax.set_title(title )
             ax.set_xlabel(xlab); ax.set_ylabel(ylab)
             fig.colorbar(imh, ax=ax, fraction=0.046, pad=0.04)
 
@@ -355,9 +298,328 @@ def show_case_prediction_grid(
         im(axes[r,1], pred, f"{name} • Prediction", (vmin, vmax))
         im(axes[r,2], err,  f"{name} • |Error|",    (0.0, emax))
 
-    plt.suptitle("Validation case — log₁₀(Te, Ti, ni, ne)")
+    plt.suptitle("Validation case")
     if savepath:
         fig.savefig(savepath, dpi=300, bbox_inches="tight")
     plt.show()
 
     return i, params_scaled, params_raw, fig
+
+
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
+import torch
+from .predict import predict_multi  # returns (C,H,W) in *physical units* per your pipeline
+
+# ---------- gather flattened true/pred pairs across a few validation samples ----------
+def gather_flat_true_pred(
+    model, loader, norm, target_keys, device="cuda",
+    max_samples=6, data_is_log10=False
+):
+    """
+    Returns dict[name] = (true_flat, pred_flat) in *linear* physical units.
+    If your y_phys is in log10, set data_is_log10=True to un-log back to linear.
+    """
+    got = {k: ([], []) for k in target_keys}
+
+    ds = loader.dataset
+    base_ds, ids = (ds.dataset, ds.indices) if hasattr(ds, "dataset") else (ds, np.arange(len(ds)))
+    picks = np.random.choice(len(ids), size=min(max_samples, len(ids)), replace=False)
+
+    for j in picks:
+        i = int(ids[j])
+        b = base_ds[i]
+        yN, m = b["y"], b["mask"]
+
+        with torch.no_grad():
+            # targets in phys units (your pipeline)
+            y_phys = norm.inverse(yN.unsqueeze(0), m.unsqueeze(0)).squeeze(0).cpu().numpy()  # (C,H,W)
+        mask = m.squeeze(0).cpu().numpy() > 0.5
+
+        # model prediction in phys units for ALL channels
+        params_scaled = getattr(base_ds, "params", None)
+        params_scaled = None if params_scaled is None else np.asarray(params_scaled[i], dtype=np.float32)
+        Ypred = predict_multi(model, norm, mask.astype(np.float32), params_scaled, device=device, as_numpy=True)
+
+        # flatten masked pixels per channel
+        for k, name in enumerate(target_keys):
+            t = y_phys[k][mask]
+            p = Ypred[k][mask]
+
+            # un-log if needed
+            if data_is_log10:
+                t = np.power(10.0, t)
+                p = np.power(10.0, p)
+
+            # drop any NaNs/Infs
+            good = np.isfinite(t) & np.isfinite(p)
+            if good.any():
+                got[name][0].append(t[good])
+                got[name][1].append(p[good])
+
+    # concat
+    for name in target_keys:
+        tt = np.concatenate(got[name][0]) if got[name][0] else np.array([])
+        pp = np.concatenate(got[name][1]) if got[name][1] else np.array([])
+        got[name] = (tt, pp)
+    return got
+
+# ---------- plot one channel ----------
+def plot_pred_vs_true_hex(t, p, name="Te", unit="eV", gridsize=80, savepath=None):
+    """
+    Hexbin pred vs true with log10 count colorbar + MAE, NMAE, R^2 in title.
+    Inputs t, p are 1D (linear units).
+    """
+    if t.size == 0:
+      raise ValueError(f"No data to plot for {name}")
+
+    # metrics
+    mae = np.mean(np.abs(p - t))
+    nmae = mae / (np.mean(np.abs(t)) + 1e-12) * 100.0
+    ss_res = np.sum((p - t)**2)
+    ss_tot = np.sum((t - np.mean(t))**2) + 1e-12
+    r2 = 1.0 - ss_res/ss_tot
+
+    fig, ax = plt.subplots(figsize=(6.2, 4.2))
+    hb = ax.hexbin(t, p, gridsize=gridsize, norm=LogNorm(), mincnt=1)
+    lim = np.nanpercentile(np.concatenate([t, p]), [0.5, 99.5])
+    lo, hi = float(lim[0]), float(lim[1])
+    ax.plot([lo, hi], [lo, hi], 'k--', lw=1, alpha=0.7)
+    ax.set_xlim(lo, hi); ax.set_ylim(lo, hi)
+    ax.set_xlabel(f"SOLPS-ITER: {name} ({unit})")
+    ax.set_ylabel(f"UNet: {name} ({unit})")
+    cbar = fig.colorbar(hb, ax=ax)
+    cbar.set_label("log10(count)")
+
+    ax.set_title(f"MAE={mae:.2g} {unit} | NMAE={nmae:.1f}% | R²={r2:.3f}")
+    ax.grid(True, alpha=0.25)
+    if savepath:
+        fig.savefig(savepath, dpi=300, bbox_inches="tight")
+    plt.show()
+    return dict(MAE=mae, NMAE=nmae, R2=r2)
+
+
+
+    # plotting.py
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
+import torch
+from .predict import predict_multi
+
+# def _maybe_unlog(arr, do_unlog, clip=(-50.0, 50.0)):
+#     """Safely convert log10 -> linear if requested."""
+#     if not do_unlog:
+#         return arr
+#     a = np.clip(arr, clip[0], clip[1])      # avoid overflow in 10**x
+#     return np.power(10.0, a)
+
+# def gather_flat_true_pred(
+#     model, loader, norm, target_keys, device="cuda",
+#     max_samples=6, data_is_log10_map=None  # dict like {"Te":False,"Ti":False,"ni":True,"ne":True}
+# ):
+#     if data_is_log10_map is None:
+#         data_is_log10_map = {k: False for k in target_keys}
+
+#     got = {k: ([], []) for k in target_keys}
+#     ds = loader.dataset
+#     base_ds, ids = (ds.dataset, ds.indices) if hasattr(ds, "dataset") else (ds, np.arange(len(ds)))
+#     picks = np.random.choice(len(ids), size=min(max_samples, len(ids)), replace=False)
+
+#     for j in picks:
+#         i = int(ids[j]); b = base_ds[i]
+#         yN, m = b["y"], b["mask"]
+#         with torch.no_grad():
+#             y_phys = norm.inverse(yN.unsqueeze(0), m.unsqueeze(0)).squeeze(0).cpu().numpy()  # (C,H,W)
+#         mask = (m.squeeze(0).cpu().numpy() > 0.5)
+
+#         params_scaled = getattr(base_ds, "params", None)
+#         params_scaled = None if params_scaled is None else np.asarray(params_scaled[i], dtype=np.float32)
+#         Ypred = predict_multi(model, norm, mask.astype(np.float32), params_scaled, device=device, as_numpy=True)
+
+#         for k, name in enumerate(target_keys):
+#             t = y_phys[k][mask]
+#             p = Ypred[k][mask]
+
+#             # un-log only if this channel is stored in log10
+#             do_unlog = bool(data_is_log10_map.get(name, False))
+#             t = _maybe_unlog(t, do_unlog)
+#             p = _maybe_unlog(p, do_unlog)
+
+#             good = np.isfinite(t) & np.isfinite(p)
+#             if good.any():
+#                 got[name][0].append(t[good])
+#                 got[name][1].append(p[good])
+
+#     for name in target_keys:
+#         tt = np.concatenate(got[name][0]) if got[name][0] else np.array([])
+#         pp = np.concatenate(got[name][1]) if got[name][1] else np.array([])
+#         got[name] = (tt, pp)
+#     return got
+
+# def plot_pred_vs_true_hex(t, p, name="Te", unit="eV", gridsize=80, savepath=None):
+#     if t.size == 0:
+#         raise ValueError(f"No data to plot for {name} (after masking/finite filter)")
+#     mae = float(np.mean(np.abs(p - t)))
+#     nmae = float(mae / (np.mean(np.abs(t)) + 1e-12) * 100.0)
+#     ss_res = float(np.sum((p - t) ** 2))
+#     ss_tot = float(np.sum((t - np.mean(t)) ** 2) + 1e-12)
+#     r2 = 1.0 - ss_res / ss_tot
+
+#     fig, ax = plt.subplots(figsize=(6.2, 4.2))
+#     hb = ax.hexbin(t, p, gridsize=gridsize, norm=LogNorm(), mincnt=1)
+#     lim = np.nanpercentile(np.concatenate([t, p]), [0.5, 99.5])
+#     lo, hi = float(lim[0]), float(lim[1])
+#     ax.plot([lo, hi], [lo, hi], 'k--', lw=1, alpha=0.7)
+#     ax.set_xlim(lo, hi); ax.set_ylim(lo, hi)
+#     ax.set_xlabel(f"SOLPS-ITER: {name} ({unit})")
+#     ax.set_ylabel(f"UNet: {name} ({unit})")
+#     cbar = fig.colorbar(hb, ax=ax); cbar.set_label("log10(count)")
+#     ax.set_title(f"MAE={mae:.2g} {unit} | NMAE={nmae:.1f}% | R²={r2:.3f}")
+#     ax.grid(True, alpha=0.25)
+#     if savepath:
+#         fig.savefig(savepath, dpi=300, bbox_inches="tight")
+#     plt.show()
+#     return {"MAE": mae, "NMAE": nmae, "R2": r2}
+
+# def plot_all_channels_scatter(
+#     model, loader, norm, *, device="cuda",
+#     target_keys=("Te","Ti","ni","ne"),
+#     units={"Te":"eV","Ti":"eV","ni":"m⁻³","ne":"m⁻³"},
+#     data_is_log10_map=None,  # per-channel
+#     max_samples=6, gridsize=80, save_prefix=None
+# ):
+#     gathered = gather_flat_true_pred(
+#         model, loader, norm, list(target_keys),
+#         device=device, max_samples=max_samples,
+#         data_is_log10_map=data_is_log10_map
+#     )
+#     metrics = {}
+#     for name in target_keys:
+#         t, p = gathered[name]
+#         sp = f"{save_prefix}_{name}.png" if save_prefix else None
+#         metrics[name] = plot_pred_vs_true_hex(t, p, name=name, unit=units.get(name, ""), gridsize=gridsize, savepath=sp)
+#     return metrics
+# plotting.py  (patched parts)
+
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
+import torch
+from .predict import predict_multi
+
+def _maybe_unlog(arr, do_unlog, clip=(-50.0, 50.0)):
+    if not do_unlog:
+        return arr
+    a = np.clip(arr, *clip)
+    return np.power(10.0, a)
+
+def gather_flat_true_pred(
+    model, loader, norm, target_keys, *,
+    dataset_keys=("Te","ne","ni","Ti"),   # <-- DATASET ORDER (y_phys channel order)
+    device="cuda", max_samples=6,
+    data_is_log10_map=None
+):
+    """
+    Returns dict[name] = (true_flat, pred_flat) in *linear* physical units,
+    selecting channels by NAME using dataset_keys -> indices.
+    """
+    if data_is_log10_map is None:
+        data_is_log10_map = {k: False for k in target_keys}
+
+    # name -> dataset index
+    name_to_idx = {name: i for i, name in enumerate(dataset_keys)}
+
+    got = {k: ([], []) for k in target_keys}
+
+    ds = loader.dataset
+    base_ds, ids = (ds.dataset, ds.indices) if hasattr(ds, "dataset") else (ds, np.arange(len(ds)))
+    picks = np.random.choice(len(ids), size=min(max_samples, len(ids)), replace=False)
+
+    for j in picks:
+        i = int(ids[j]); b = base_ds[i]
+        yN, m = b["y"], b["mask"]
+
+        with torch.no_grad():
+            y_phys = norm.inverse(yN.unsqueeze(0), m.unsqueeze(0)).squeeze(0).cpu().numpy()  # (C,H,W)
+
+        mask = (m.squeeze(0).cpu().numpy() > 0.5)
+
+        params_scaled = getattr(base_ds, "params", None)
+        params_scaled = None if params_scaled is None else np.asarray(params_scaled[i], dtype=np.float32)
+
+        Ypred = predict_multi(model, norm, mask.astype(np.float32), params_scaled, device=device, as_numpy=True)  # (C,H,W)
+
+        for name in target_keys:
+            k = name_to_idx[name]  # pick channel by NAME
+            t = y_phys[k][mask]
+            p = Ypred[k][mask]
+
+            # (If any channel is stored in log10, convert back to linear)
+            do_unlog = bool(data_is_log10_map.get(name, False))
+            t = _maybe_unlog(t, do_unlog)
+            p = _maybe_unlog(p, do_unlog)
+
+            good = np.isfinite(t) & np.isfinite(p)
+            if good.any():
+                got[name][0].append(t[good].astype(np.float64))
+                got[name][1].append(p[good].astype(np.float64))
+
+    for name in target_keys:
+        tt = np.concatenate(got[name][0]) if got[name][0] else np.array([], dtype=np.float64)
+        pp = np.concatenate(got[name][1]) if got[name][1] else np.array([], dtype=np.float64)
+        got[name] = (tt, pp)
+    return got
+
+def plot_pred_vs_true_hex(t, p, name="Te", unit="eV", gridsize=80, savepath=None):
+    if t.size == 0:
+        raise ValueError(f"No data to plot for {name} (after masking/finite filter)")
+
+    # metrics (float64 for stability)
+    mae = float(np.mean(np.abs(p - t)))
+    denom = float(np.mean(np.abs(t)) + 1e-12)
+    nmae = float(mae / denom * 100.0)
+    t_mean = float(np.mean(t))
+    ss_res = float(np.sum((p - t) ** 2))
+    ss_tot = float(np.sum((t - t_mean) ** 2) + 1e-12)
+    r2 = float(1.0 - ss_res / ss_tot)
+
+    fig, ax = plt.subplots(figsize=(6.2, 4.2))
+    hb = ax.hexbin(t, p, gridsize=gridsize, norm=LogNorm(), mincnt=1)
+    lim = np.nanpercentile(np.concatenate([t, p]), [0.5, 99.5])
+    lo, hi = float(lim[0]), float(lim[1])
+    ax.plot([lo, hi], [lo, hi], 'k--', lw=1, alpha=0.7)
+    ax.set_xlim(lo, hi); ax.set_ylim(lo, hi)
+    ax.set_xlabel(f"SOLPS-ITER: {name} ({unit})")
+    ax.set_ylabel(f"UNet: {name} ({unit})")
+    cbar = fig.colorbar(hb, ax=ax); cbar.set_label("log10(count)")
+    ax.set_title(f"MAE={mae:.2g} {unit} | NMAE={nmae:.1f}% | R²={r2:.3f}")
+    ax.grid(True, alpha=0.25)
+    if savepath:
+        fig.savefig(savepath, dpi=300, bbox_inches="tight")
+    plt.show()
+    return {"MAE": mae, "NMAE": nmae, "R2": r2}
+
+def plot_all_channels_scatter(
+    model, loader, norm, *, device="cuda",
+    target_keys=("Te","Ti","ni","ne"),      # PLOT order (anything you like)
+    dataset_keys=("Te","ne","ni","Ti"),     # DATASET order (must match y_phys)
+    units={"Te":"eV","Ti":"eV","ni":"m⁻³","ne":"m⁻³"},
+    data_is_log10_map=None,                 # per-channel (all False for your data)
+    max_samples=6, gridsize=80, save_prefix=None
+):
+    gathered = gather_flat_true_pred(
+        model, loader, norm, list(target_keys),
+        dataset_keys=dataset_keys,
+        device=device,
+        max_samples=max_samples,
+        data_is_log10_map=data_is_log10_map,
+    )
+    metrics = {}
+    for name in target_keys:
+        t, p = gathered[name]
+        sp = f"{save_prefix}_{name}.png" if save_prefix else None
+        metrics[name] = plot_pred_vs_true_hex(t, p, name=name, unit=units.get(name, ""), gridsize=gridsize, savepath=sp)
+    return metrics
+
