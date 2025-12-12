@@ -136,3 +136,59 @@ def make_loaders(npz_path, inputs_mode="params", batch_size=16, split=0.85, seed
 
     return train_loader, val_loader, norm, P, (H, W), (param_mu, param_std)
 
+def make_loaders(npz_path, inputs_mode="params", batch_size=16, split=0.85, seed=42,
+                 device=None, num_workers=None, pin_memory=None, persistent_workers=None):
+    import torch, numpy as np
+    from torch.utils.data import DataLoader, Subset
+
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    use_cuda = (str(device) == "cuda")
+
+    # sensible defaults
+    if num_workers is None:
+        num_workers = 2 if use_cuda else 0
+    if pin_memory is None:
+        pin_memory = use_cuda
+    if persistent_workers is None:
+        persistent_workers = bool(num_workers > 0)
+
+    # raw split
+    raw_all = SOLPSDataset(npz_path, normalizer=None, inputs=inputs_mode)
+    N = len(raw_all)
+    idx = np.arange(N); rng = np.random.default_rng(seed); rng.shuffle(idx)
+    cut = int(split * N)
+    idx_tr, idx_va = idx[:cut], idx[cut:]
+
+    # fit normalizer on TRAIN only
+    norm = MaskedLogStandardizer(eps=1.0)
+    raw_train = Subset(raw_all, idx_tr)
+    norm.fit(DataLoader(raw_train, batch_size=16, shuffle=False,
+                        num_workers=num_workers, pin_memory=pin_memory,
+                        persistent_workers=persistent_workers))
+
+    # datasets WITH normalization
+    ds_tr = SOLPSDataset(npz_path, normalizer=norm, inputs=inputs_mode)
+    ds_va = SOLPSDataset(npz_path, normalizer=norm, inputs=inputs_mode)
+
+    # param scaling if in params mode
+    param_mu = param_std = None
+    if inputs_mode != "autoencoder":
+        param_mu, param_std = fit_param_scaler(raw_all.params[idx_tr])
+        apply_param_scaler(ds_tr, param_mu, param_std)
+        apply_param_scaler(ds_va, param_mu, param_std)
+
+    train_set = Subset(ds_tr, idx_tr)
+    val_set   = Subset(ds_va, idx_va)
+
+    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True,
+                              num_workers=num_workers, pin_memory=pin_memory,
+                              persistent_workers=persistent_workers)
+    val_loader   = DataLoader(val_set,   batch_size=batch_size, shuffle=False,
+                              num_workers=num_workers, pin_memory=pin_memory,
+                              persistent_workers=persistent_workers)
+
+    P = train_set.dataset.params.shape[1] if inputs_mode != "autoencoder" else 0
+    H, W = train_set[0]["mask"].shape[-2:]
+
+    return train_loader, val_loader, norm, P, (H, W), (param_mu, param_std)

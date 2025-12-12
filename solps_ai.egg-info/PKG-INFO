@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: solps-ai
+Version: 0.1.0
+Summary: U-Net SOLPS Te predictor
+Requires-Python: >=3.9
+Requires-Dist: numpy
+Requires-Dist: scipy
+Requires-Dist: matplotlib
+Requires-Dist: torch>=2.2
