@@ -50,6 +50,22 @@ def _parse_custom_sweep(s):
     return out
 
 
+def _parse_channel_weights(s, y_keys):
+    if s is None or str(s).strip() == "":
+        return [1.0 for _ in y_keys], {k: 1.0 for k in y_keys}
+    wmap = {k: 1.0 for k in y_keys}
+    parts = [p.strip() for p in str(s).split(",") if p.strip()]
+    for tok in parts:
+        if ":" not in tok:
+            raise ValueError(f"Bad CHANNEL_WEIGHTS token {tok!r}; expected name:value")
+        k, v = tok.split(":", 1)
+        kk = k.strip()
+        if kk not in wmap:
+            raise KeyError(f"CHANNEL_WEIGHTS key {kk!r} not in y_keys={y_keys}")
+        wmap[kk] = float(v.strip())
+    return [wmap[k] for k in y_keys], wmap
+
+
 def _build_sweep_trials(default_base, default_lr, default_batch, smoke_test):
     if smoke_test:
         return [{"tag": "smoke", "base": default_base, "lr": default_lr, "batch": default_batch}]
@@ -165,11 +181,14 @@ def run(smoke_test=False):
     early_stop_patience = _env_int("EARLY_STOP_PATIENCE", 3 if smoke_test else 8)
     early_stop_min_delta = _env_float("EARLY_STOP_MIN_DELTA", 1e-4)
     split = 0.85
+    channel_weights_env = os.environ.get("CHANNEL_WEIGHTS", "")
+    channel_weights, channel_weights_map = _parse_channel_weights(channel_weights_env, y_keys)
     print(
         f"cfg: epochs={epochs} batch={batch_size} base={base} lr={lr:.2e} "
         f"sweep={sweep_enabled} early_stop_patience={early_stop_patience} y_keys={y_keys} "
         f"sweep_preset={os.environ.get('SWEEP_PRESET', 'strong3')}"
     )
+    print(f"channel_weights={channel_weights_map}")
 
     def make_data(bs):
         return data.make_loaders(
@@ -211,6 +230,7 @@ def run(smoke_test=False):
             lr_init=t_lr,
             early_stop_patience=early_stop_patience,
             early_stop_min_delta=early_stop_min_delta,
+            channel_weights=channel_weights,
         )
         best_val = float(np.min(np.asarray(hist.get("va_mse", [np.inf]), dtype=float)))
         print(f"[trial {tag}] best_val_mse={best_val:.6g} ckpt={trial_ckpt}")

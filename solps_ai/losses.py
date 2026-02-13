@@ -52,19 +52,25 @@ def _grad_xy_grouped(x, kx, ky):
     return gx, gy
 
 
-def _masked_mean(px, mask, w=None):
+def _masked_mean(px, mask, w=None, channel_weights=None):
     # px: (B,C,H,W) or (B,1,H,W)
     # mask: (B,1,H,W)
     if mask.shape[1] == 1 and px.shape[1] != 1:
         mask = mask.expand(px.shape[0], px.shape[1], px.shape[2], px.shape[3])
+    wf = torch.ones_like(px)
     if w is not None:
         if w.ndim == 2:
             w = w[None, None, :, :]
         if w.shape[1] == 1 and px.shape[1] != 1:
             w = w.expand(px.shape[0], px.shape[1], px.shape[2], px.shape[3])
-        px = px * w
-    num = (px * mask).sum()
-    den = mask.sum().clamp_min(1e-8)
+        wf = wf * w
+    if channel_weights is not None:
+        cw = channel_weights.view(1, -1, 1, 1).to(px.device, px.dtype)
+        if cw.shape[1] == 1 and px.shape[1] != 1:
+            cw = cw.expand(px.shape[0], px.shape[1], px.shape[2], px.shape[3])
+        wf = wf * cw
+    num = (px * mask * wf).sum()
+    den = (mask * wf).sum().clamp_min(1e-8)
     return num / den
 
 
@@ -82,6 +88,7 @@ def masked_weighted_loss(
 
     # NEW: compute gradient loss on downsampled fields for speed
     grad_ds: int = 1,      # 1=full res, 2=half, 4=quarter, ...
+    channel_weights=None,  # optional tensor-like of shape (C,)
 ):
     """
     pred/target: (B,C,H,W) normalized
@@ -99,8 +106,8 @@ def masked_weighted_loss(
     else:
         raise ValueError(f"Unknown base={base}")
 
-    L_base = _masked_mean(base_px, mask, w=None)
-    L_edge = _masked_mean(base_px, mask, w=w) if (w is not None and lam_w != 0.0) \
+    L_base = _masked_mean(base_px, mask, w=None, channel_weights=channel_weights)
+    L_edge = _masked_mean(base_px, mask, w=w, channel_weights=channel_weights) if (w is not None and lam_w != 0.0) \
              else torch.zeros((), device=pred.device, dtype=pred.dtype)
 
     # ----- gradient loss (optional) -----
@@ -152,7 +159,7 @@ def masked_weighted_loss(
             else:
                 raise ValueError(f"Unknown grad_base={grad_base}")
 
-        L_grad = _masked_mean(grad_px, m_g, w=None)
+        L_grad = _masked_mean(grad_px, m_g, w=None, channel_weights=channel_weights)
 
     else:
         L_grad = torch.zeros((), device=pred.device, dtype=pred.dtype)
@@ -176,6 +183,7 @@ def masked_weighted_loss(
             grad_base=grad_base,
             multiscale=0,
             grad_ds=max(1, int(grad_ds // 2)),  # keep grad downsampling consistent
+            channel_weights=channel_weights,
         )
         loss = loss + ms_weight * loss2
 
@@ -193,6 +201,7 @@ def masked_weighted_loss(
                 grad_base=grad_base,
                 multiscale=0,
                 grad_ds=max(1, int(grad_ds // 4)),
+                channel_weights=channel_weights,
             )
             loss = loss + ms_weight * 0.5 * loss4
 
@@ -237,4 +246,3 @@ def batch_error_sums_ev(pred, target, mask, norm):
         sq_sum  = (diff * diff).sum()
         px      = m.sum()  # counts pixels * channels
         return abs_sum, sq_sum, px
-

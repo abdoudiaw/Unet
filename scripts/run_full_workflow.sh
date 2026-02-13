@@ -27,6 +27,7 @@ BASE_DIR="$(default_if_empty "${BASE_DIR:-}" "/content/drive/MyDrive/SOLPS_DB")"
 
 # Step 1: params -> all fields
 Y_KEYS_FWD="$(default_if_empty "${Y_KEYS_FWD:-}" "Te,Ti,ne,ni,ua,Sp,Qe,Qi,Sm")"
+FWD_CHANNEL_WEIGHTS="$(default_if_empty "${FWD_CHANNEL_WEIGHTS:-}" "Te:1.0,Ti:1.0,ne:1.2,ni:1.2,ua:1.5,Sp:1.2,Qe:1.2,Qi:1.2,Sm:1.2")"
 SWEEP_TRIALS="$(default_if_empty "${SWEEP_TRIALS:-}" "base=32,lr=3e-4,batch=4; base=48,lr=2e-4,batch=4; base=48,lr=1e-4,batch=4")"
 EPOCHS_FWD="$(default_if_empty "${EPOCHS_FWD:-}" "450")"
 EARLY_STOP_PATIENCE_FWD="$(default_if_empty "${EARLY_STOP_PATIENCE_FWD:-}" "80")"
@@ -56,6 +57,7 @@ echo "=== Workflow configuration ==="
 echo "NPZ_PATH=${NPZ_PATH}"
 echo "BASE_DIR=${BASE_DIR}"
 echo "Y_KEYS_FWD=${Y_KEYS_FWD}"
+echo "FWD_CHANNEL_WEIGHTS=${FWD_CHANNEL_WEIGHTS}"
 echo "SWEEP_TRIALS=${SWEEP_TRIALS}"
 echo "EPOCHS_FWD=${EPOCHS_FWD} EARLY_STOP_PATIENCE_FWD=${EARLY_STOP_PATIENCE_FWD}"
 echo "INV_N_CASES=${INV_N_CASES} INV_STEPS=${INV_STEPS}"
@@ -76,6 +78,7 @@ echo "=== Step 1/5: Train params->(plasma+sources) conditional U-Net ==="
 MPLBACKEND=Agg \
 NPZ_PATH="${NPZ_PATH}" \
 Y_KEYS="${Y_KEYS_FWD}" \
+CHANNEL_WEIGHTS="${FWD_CHANNEL_WEIGHTS}" \
 SWEEP=1 \
 EPOCHS="${EPOCHS_FWD}" \
 EARLY_STOP_PATIENCE="${EARLY_STOP_PATIENCE_FWD}" \

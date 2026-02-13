@@ -35,6 +35,7 @@ def train_unet(
     early_stop_min_delta: float = 0.0,       # minimum val improvement to reset patience
     lam_grad_warmup_start: int = 20,         # epoch to start ramping grad loss
     lam_grad_warmup_end: int = 60,           # epoch to reach full lam_grad
+    channel_weights=None,                    # optional list/array shape (C,)
 ):
     """
     param_scaler: (mu, std) or None, to store for inference
@@ -56,6 +57,13 @@ def train_unet(
         model_cls = lambda in_ch, out_ch: UNet(in_ch=in_ch, out_ch=out_ch, base=base)
 
     model = model_cls(in_ch, out_ch).to(device)
+
+    cw_t = None
+    if channel_weights is not None:
+        cw_arr = np.asarray(channel_weights, dtype=np.float32).reshape(-1)
+        if cw_arr.size != int(out_ch):
+            raise ValueError(f"channel_weights length={cw_arr.size} but out_ch={out_ch}")
+        cw_t = torch.from_numpy(cw_arr).to(device)
 
     opt = torch.optim.Adam(model.parameters(), lr=lr_init)
     # ---- ReduceLROnPlateau ----
@@ -170,6 +178,7 @@ def train_unet(
                     multiscale=multiscale,
                     ms_weight=ms_weight,
                     grad_ds=2,   # <<<<<<<<<<<< big speed-up
+                    channel_weights=cw_t,
                 )
 
 
@@ -247,6 +256,7 @@ def train_unet(
                         grad_base=grad_base,
                         multiscale=multiscale,     # try 0 first, then 1
                         ms_weight=ms_weight,
+                        channel_weights=cw_t,
                     )
 
                 px = float(m.sum().item())
@@ -321,6 +331,7 @@ def train_unet(
                 "param_mu": mu,
                 "param_std": std,
                 "param_scaler": (mu, std),
+                "channel_weights": None if cw_t is None else cw_t.detach().cpu().numpy().tolist(),
                 "history": history,
             }
             torch.save(ckpt, save_path)
