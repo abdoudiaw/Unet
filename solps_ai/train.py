@@ -1,428 +1,355 @@
-#from typing import Optional
-#import numpy as np
-#import torch
-#from .losses import masked_weighted_loss, mae_norm, batch_error_sums_ev, edge_weights
-#
-## def train_unet(train_loader, val_loader, norm, in_ch, device,
-##                epochs=20, base=32, inputs_mode="params",
-##                lam_grad=0.2, lam_w=1.0, lam_ev=0.0,
-##                param_scaler=None, save_path=None,
-##                return_history=False, history_path=None,
-##                amp=True, grad_accum=1, clip_grad=None):
-#
-##     model = UNet(in_ch=in_ch, base=base, ...).to(device)
-##     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
-##     scaler = torch.cuda.amp.GradScaler(enabled=amp)   # <- create ONCE
-#
-##     criterion = make_loss(lam_w=lam_w, lam_grad=lam_grad, lam_ev=lam_ev, norm=norm)
-#
-##     best_val = float("inf")
-##     for epoch in range(epochs):
-##         # -------- train --------
-##         model.train()
-##         optimizer.zero_grad(set_to_none=True)
-##         for i, (x, y) in enumerate(train_loader):
-##             x = x.to(device, non_blocking=True)
-##             y = y.to(device, non_blocking=True)
-#
-##             with torch.cuda.amp.autocast(enabled=amp):   # <- forward/loss in autocast
-##                 y_pred = model(x)
-##                 loss = criterion(y_pred, y) / grad_accum
-#
-##             scaler.scale(loss).backward()
-#
-##             if (i + 1) % grad_accum == 0:
-##                 if clip_grad is not None:
-##                     scaler.unscale_(optimizer)  # required before clipping
-##                     torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
-##                 scaler.step(optimizer)
-##                 scaler.update()
-##                 optimizer.zero_grad(set_to_none=True)
-#
-##         # -------- validate --------
-##         model.eval()
-##         val_loss = 0.0
-##         with torch.no_grad(), torch.cuda.amp.autocast(enabled=amp):
-##             for x, y in val_loader:
-##                 x = x.to(device, non_blocking=True)
-##                 y = y.to(device, non_blocking=True)
-##                 y_pred = model(x)
-##                 val_loss += criterion(y_pred, y).item()
-#
-##         val_loss /= max(1, len(val_loader))
-##         if val_loss < best_val and save_path:
-##             best_val = val_loss
-##             torch.save(model.state_dict(), save_path)
-#
-##         # (optional) log history here...
-#
-##     return (model, None) if not return_history else (model, {"best_val": best_val})
-#
-#
-## def train_unet(
-##     train_loader, val_loader, norm, in_ch, device, *,
-##     inputs_mode="params", lam_grad=0.2, lam_w=1.0, lam_ev=0.0,
-##     epochs=10, base=32, param_scaler=None, model_cls=None,
-## #    save_path="unet_best.pt", return_history: bool = True, history_path: str | None = None,
-##     # in train_unet signature
-##     save_path="unet_best.pt",
-##     return_history: bool = True,
-##     history_path: Optional[str] = None,
-#
-##     # ---- LR scheduler knobs (tweak as needed) ----
-##     lr_init: float = 1e-3, lr_factor: float = 0.5, lr_patience: int = 5, lr_min: float = 1e-5,
-##     lr_threshold: float = 1e-4
-## ):
-##     """
-##     param_scaler: (mu, std) or None, to store for inference
-##     model_cls: a constructor like lambda in_ch,out_ch: UNet(in_ch, out_ch, base)
-##     """
-##     if model_cls is None:
-##         from .models import UNet
-##         model_cls = lambda in_ch, out_ch: UNet(in_ch=in_ch, out_ch=1, base=base)
-#
-##     model = model_cls(in_ch, 1).to(device)
-##     opt   = torch.optim.Adam(model.parameters(), lr=lr_init)
-#
-##     # ---- ReduceLROnPlateau ----
-##     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-##         opt,
-##         mode="min",
-##         factor=lr_factor,
-##         patience=lr_patience,
-##         threshold=lr_threshold,
-##         threshold_mode="rel",
-##         cooldown=0,
-##         min_lr=lr_min,
-##         eps=1e-8,
-##     )
-#
-#
-##     # AMP
-##     use_cuda  = (str(device) == "cuda")
-##     use_amp   = use_cuda
-##     amp_dtype = torch.bfloat16 if (use_cuda and getattr(torch.cuda, "is_bf16_supported", lambda: False)()) else torch.float16
-##     scaler    = torch.amp.GradScaler('cuda', enabled=use_amp)
-#
-##     # weight map from first sample
-##     m0 = train_loader.dataset[0]["mask"]  # (1,H,W) CPU
-##     w_map = edge_weights(m0.numpy()[0], sigma_px=3.0)
-##     w_map = torch.from_numpy(w_map).to(device).unsqueeze(0).unsqueeze(0)
-#
-##     # history containers
-##     history = {
-##         "tr_mse": [], "tr_maeN": [],
-##         "va_mse": [], "va_maeN": [],
-##         "va_mae_eV": [], "va_rmse_eV": []
-##     }
-#
-##     best_val = float("inf")
-##     for epoch in range(epochs):
-##         # ---------------- train ----------------
-##         model.train()
-##         tr_loss_sum = tr_maeN_sum = tr_px = 0.0
-##         for b in train_loader:
-##             x, y, m = b["x"].to(device), b["y"].to(device), b["mask"].to(device)
-##             opt.zero_grad(set_to_none=True)
-#
-##             with torch.amp.autocast('cuda', enabled=use_amp, dtype=amp_dtype):
-##                 p = model(x)
-##                 # ensure dtype match for weighted loss under autocast
-##                 loss_base = masked_weighted_loss(p, y, m, w=w_map.to(p.dtype), lam_grad=lam_grad, lam_w=lam_w)
-#
-##                 if lam_ev > 0:
-##                     p_ev = norm.inverse(p.float(), m.float())
-##                     y_ev = norm.inverse(y.float(), m.float())
-##                     loss_ev = ((p_ev - y_ev).abs() * m.float()).sum() / m.sum().clamp_min(1e-8)
-##                     loss = loss_base + lam_ev * loss_ev
-##                 else:
-##                     loss = loss_base
-#
-##             scaler.scale(loss).backward()
-##             scaler.unscale_(opt)
-##             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-##             scaler.step(opt)
-##             scaler.update()
-#
-##             with torch.no_grad():
-##                 px = float(m.sum().item())
-##                 tr_loss_sum += float(loss.item()) * px
-##                 tr_maeN_sum += float(mae_norm(p.float(), y.float(), m.float()).item()) * px
-##                 tr_px       += px
-#
-##         tr_loss = tr_loss_sum / max(tr_px, 1.0)
-##         tr_maeN = tr_maeN_sum / max(tr_px, 1.0)
-#
-##         # ---------------- validate ----------------
-##         model.eval()
-##         va_loss_sum = va_maeN_sum = va_px = 0.0
-##         va_abs_ev_sum = va_sq_ev_sum = 0.0
-##         with torch.no_grad():
-##             for b in val_loader:
-##                 x, y, m = b["x"].to(device), b["y"].to(device), b["mask"].to(device)
-##                 with torch.amp.autocast('cuda', enabled=use_amp, dtype=amp_dtype):
-##                     p = model(x)
-##                     loss_b = masked_weighted_loss(p, y, m, w=w_map.to(p.dtype), lam_grad=lam_grad, lam_w=lam_w)
-#
-##                 px = float(m.sum().item())
-##                 va_loss_sum += float(loss_b.item()) * px
-##                 va_maeN_sum += float(mae_norm(p.float(), y.float(), m.float()).item()) * px
-##                 va_px       += px
-#
-##                 abs_sum, sq_sum, _ = batch_error_sums_ev(p.float(), y.float(), m.float(), norm)
-##                 va_abs_ev_sum += float(abs_sum.item())
-##                 va_sq_ev_sum  += float(sq_sum.item())
-#
-##         va_loss    = va_loss_sum / max(va_px, 1.0)
-##         va_maeN    = va_maeN_sum / max(va_px, 1.0)
-##         va_MAE_eV  = va_abs_ev_sum / max(va_px, 1.0)
-##         va_RMSE_eV = (va_sq_ev_sum / max(va_px, 1.0)) ** 0.5
-#
-##         # ---- record history ----
-##         history["tr_mse"].append(tr_loss)
-##         history["tr_maeN"].append(tr_maeN)
-##         history["va_mse"].append(va_loss)
-##         history["va_maeN"].append(va_maeN)
-##         history["va_mae_eV"].append(va_MAE_eV)
-##         history["va_rmse_eV"].append(va_RMSE_eV)
-#
-##         # ---- log & schedule ----
-##         lr_before = opt.param_groups[0]["lr"]
-##         print(
-##             f"epoch {epoch:02d} | "
-##             f"train MSE {tr_loss:.4f}  MAE_norm {tr_maeN:.4f} | "
-##             f"val MSE {va_loss:.4f}  MAE_norm {va_maeN:.4f} | "
-##             f"val MAE {va_MAE_eV:.2f} eV  RMSE {va_RMSE_eV:.2f} eV | "
-##             f"lr {lr_before:.2e}"
-##         )
-#
-##         # step the LR scheduler on validation loss
-##         scheduler.step(va_loss)
-##         lr_after = opt.param_groups[0]["lr"]
-##         if lr_after < lr_before:
-##             print(f"  ↳ ReduceLROnPlateau: lr {lr_before:.2e} → {lr_after:.2e}")
-#
-##         # ---- checkpoint best ----
-##         if va_loss < best_val:
-##             best_val = va_loss
-##             ckpt = {
-##                 "model": model.state_dict(),
-##                 "norm": (float(norm.mu), float(norm.sigma), float(norm.eps)),
-##                 "inputs_mode": inputs_mode,
-##                 "in_ch": in_ch,
-##             }
-##             if param_scaler is not None:
-##                 mu, std = param_scaler
-##                 if mu is not None:
-##                     ckpt["param_mu"]  = mu.tolist() if hasattr(mu, "tolist") else mu
-##                     ckpt["param_std"] = std.tolist() if hasattr(std, "tolist") else std
-##             torch.save(ckpt, save_path)
-#
-##     # optional persist of history
-##     if history_path is not None:
-##         np.savez(history_path, **history)
-#
-##     return (model, history) if return_history else model
-#
-#
-## train.py
-#import torch
-#from torch import nn
-#
-## wherever UNet lives in your project:
-#from solps_ai.models import UNet   # adjust this import to your actual path
-#
-#def train_unet(train_loader, val_loader, norm, in_ch, device,
-#               epochs=20, base=32, inputs_mode="params",
-#               lam_grad=0.2, lam_w=1.0, lam_ev=0.0,
-#               param_scaler=None, save_path=None,
-#               return_history=False, history_path=None,
-#               amp=True, grad_accum=1, clip_grad=None,
-#               unet_kwargs=None):
-#
-#    if unet_kwargs is None:
-#        unet_kwargs = {}
-#
-#    # ✅ no ellipsis here
-#    model = UNet(in_ch=in_ch, base=base, **unet_kwargs).to(device)
-#
-#    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
-#    scaler = torch.cuda.amp.GradScaler(enabled=amp)
-#
-#    criterion = make_loss(lam_w=lam_w, lam_grad=lam_grad,
-#                          lam_ev=lam_ev, norm=norm)
-#
-#    best_val = float("inf")
-#    history = {"train_loss": [], "val_loss": []}
-#
-#    for epoch in range(epochs):
-#        # -------- train --------
-#        model.train()
-#        optimizer.zero_grad(set_to_none=True)
-#        running = 0.0
-#
-#        for i, (x, y) in enumerate(train_loader):
-#            x = x.to(device, non_blocking=True)
-#            y = y.to(device, non_blocking=True)
-#
-#            with torch.cuda.amp.autocast(enabled=amp):
-#                y_pred = model(x)
-#                loss = criterion(y_pred, y) / grad_accum
-#
-#            scaler.scale(loss).backward()
-#
-#            if (i + 1) % grad_accum == 0:
-#                if clip_grad is not None:
-#                    scaler.unscale_(optimizer)
-#                    nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
-#                scaler.step(optimizer)
-#                scaler.update()
-#                optimizer.zero_grad(set_to_none=True)
-#
-#            running += loss.item() * grad_accum
-#
-#        train_loss = running / max(1, len(train_loader))
-#        history["train_loss"].append(train_loss)
-#
-#        # -------- validate --------
-#        model.eval()
-#        val_loss = 0.0
-#        with torch.no_grad(), torch.cuda.amp.autocast(enabled=amp):
-#            for x, y in val_loader:
-#                x = x.to(device, non_blocking=True)
-#                y = y.to(device, non_blocking=True)
-#                y_pred = model(x)
-#                val_loss += criterion(y_pred, y).item()
-#
-#        val_loss /= max(1, len(val_loader))
-#        history["val_loss"].append(val_loss)
-#
-#        if save_path and val_loss < best_val:
-#            best_val = val_loss
-#            torch.save(model.state_dict(), save_path)
-#
-#        # (optional) write `history` to disk each epoch if history_path is set
-#
-#    return (model, history) if return_history else (model, None)
-#
-#
-
-from typing import Optional
 import numpy as np
 import torch
+import os 
 from .losses import masked_weighted_loss, mae_norm, batch_error_sums_ev, edge_weights
 
-# from solps_ai.losses import masked_weighted_loss, mae_norm, batch_error_sums_ev, edge_weights
 
-def make_loss(lam_w=1.0, lam_grad=0.2, lam_ev=0.0, norm=None):
-    """Factory returning a callable composite loss using existing primitives."""
-    def loss_fn(pred, target):
-        # basic mask handling — assume pred,target are (B,1,H,W)
-        mask = torch.ones_like(pred)
-        return masked_weighted_loss(pred, target, mask, w=None,
-                                    lam_grad=lam_grad, lam_w=lam_w)
-    return loss_fn
+def train_unet(
+    train_loader, val_loader, norm, in_ch, device, *,
+    out_ch: int | None = None,
+    inputs_mode="params",
+    lam_grad=0.2, lam_w=1.0, lam_ev=0.0,
+    epochs=10, base=32, param_scaler=None, model_cls=None,
+    save_path="unet_best.pt",
+    return_history: bool = True,
+    history_path=None,
+    multiscale=1,
+    grad_base="l1",
+    ms_weight=0.5,
+    resume_path: str | None = None,
+    strict: bool = True,
 
-# train.py
-import torch
-from torch import nn
+    # ---- LR scheduler knobs ----
+    lr_init: float = 1e-3, lr_factor: float = 0.5, lr_patience: int = 5, lr_min: float = 1e-5,
+    lr_threshold: float = 1e-4,
 
-# wherever UNet lives in your project:
-from solps_ai.models import UNet   # adjust this import to your actual path
+    # ---- NEW: GPU scaling knobs ----
+    amp: bool = True,                         # enable AMP on CUDA
+    grad_accum_steps: int = 1,                # >1 to emulate larger batch without OOM
+    non_blocking: bool = True,                # async H2D copies when pin_memory=True in DataLoader
+    clip_grad: float = 1.0,                   # grad clipping (None/0 to disable)
+    channels_last: bool = True,               # better conv perf on many NVIDIA GPUs
+    cudnn_benchmark: bool = True,             # speed up if input sizes are constant
+    log_every: int = 1,                       # print every N epochs
+    early_stop_patience: int | None = None,  # stop if no val improvement for N epochs
+    early_stop_min_delta: float = 0.0,       # minimum val improvement to reset patience
+    lam_grad_warmup_start: int = 20,         # epoch to start ramping grad loss
+    lam_grad_warmup_end: int = 60,           # epoch to reach full lam_grad
+):
+    """
+    param_scaler: (mu, std) or None, to store for inference
+    model_cls: a constructor like lambda in_ch,out_ch: UNet(in_ch, out_ch, base)
+    """
+    # --- device flags ---
+    device = torch.device(device)
+    use_cuda = (device.type == "cuda")
 
-def train_unet(train_loader, val_loader, norm, in_ch, device,
-               epochs=20, base=32, inputs_mode="params",
-               lam_grad=0.2, lam_w=1.0, lam_ev=0.0,
-               param_scaler=None, save_path=None,
-               return_history=False, history_path=None,
-               amp=True, grad_accum=1, clip_grad=None,
-               unet_kwargs=None):
+    if use_cuda and cudnn_benchmark:
+        torch.backends.cudnn.benchmark = True
 
-    if unet_kwargs is None:
-        unet_kwargs = {}
+    if out_ch is None:
+        out_ch = 1
 
-    # ✅ no ellipsis here
-    model = UNet(in_ch=in_ch, base=base, **unet_kwargs).to(device)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
-    scaler = torch.cuda.amp.GradScaler(enabled=amp)
+    if model_cls is None:
+        from .models import UNet
+        model_cls = lambda in_ch, out_ch: UNet(in_ch=in_ch, out_ch=out_ch, base=base)
 
-    criterion = make_loss(lam_w=lam_w, lam_grad=lam_grad,
-                          lam_ev=lam_ev, norm=norm)
+    model = model_cls(in_ch, out_ch).to(device)
 
+    opt = torch.optim.Adam(model.parameters(), lr=lr_init)
+    # ---- ReduceLROnPlateau ----
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        opt,
+        mode="min",
+        factor=lr_factor,
+        patience=lr_patience,
+        threshold=lr_threshold,
+        threshold_mode="rel",
+        cooldown=0,
+        min_lr=lr_min,
+        eps=1e-8,
+    )
+    
+    use_amp = bool(amp and use_cuda)
+
+    if use_amp and getattr(torch.cuda, "is_bf16_supported", lambda: False)():
+        amp_dtype = torch.bfloat16
+    else:
+        amp_dtype = torch.float16
+
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+
+    start_epoch = 0
     best_val = float("inf")
-    history = {"train_loss": [], "val_loss": []}
+    
+    if resume_path is not None and os.path.exists(resume_path):
+            ckpt = torch.load(resume_path, map_location=device)
 
-    for epoch in range(epochs):
-        # -------- train --------
+            model.load_state_dict(ckpt["model"], strict=strict)
+
+            if "opt" in ckpt:
+                opt.load_state_dict(ckpt["opt"])
+            if "sched" in ckpt:
+                scheduler.load_state_dict(ckpt["sched"])
+            if "scaler" in ckpt and use_amp:
+                scaler.load_state_dict(ckpt["scaler"])
+
+            start_epoch = int(ckpt.get("epoch", 0)) + 1
+            best_val = float(ckpt.get("best_val", best_val))
+
+            print(f"[resume] loaded {resume_path} @ epoch={start_epoch} best_val={best_val:.6g}")
+            
+        
+
+    # optional memory format for faster conv
+    if use_cuda and channels_last:
+        model = model.to(memory_format=torch.channels_last)
+
+    # ---- weight map from first sample ----
+    m0 = train_loader.dataset[0]["mask"]  # (1,H,W) CPU
+    w_map = edge_weights(m0.numpy()[0], sigma_px=3.0)
+    w_map = torch.from_numpy(w_map).to(device).unsqueeze(0).unsqueeze(0)  # (1,1,H,W)
+
+    # history containers
+    history = {
+        "tr_mse": [], "tr_maeN": [],
+        "va_mse": [], "va_maeN": [],
+        "va_mae_eV": [], "va_rmse_eV": [],
+        "lr": [],
+    }
+
+    # ---------- TRAIN LOOP ----------
+    no_improve = 0
+    for epoch in range(start_epoch, start_epoch + epochs):
+
+        # ---------------- train ----------------
         model.train()
-        optimizer.zero_grad(set_to_none=True)
-        running = 0.0
+        tr_loss_sum = tr_maeN_sum = tr_px = 0.0
 
-        for i, batch in enumerate(train_loader):
-            x = batch["x"].to(device, non_blocking=True)
-            y = batch["y"].to(device, non_blocking=True)
-            mask = batch.get("mask", torch.ones_like(y)).to(device, non_blocking=True)
+        opt.zero_grad(set_to_none=True)
+        accum = 0
+
+        # Smooth ramp for gradient loss to avoid abrupt regime shift.
+        if lam_grad == 0.0:
+            lam_grad_epoch = 0.0
+        elif epoch < int(lam_grad_warmup_start):
+            lam_grad_epoch = 0.0
+        elif epoch >= int(lam_grad_warmup_end):
+            lam_grad_epoch = lam_grad
+        else:
+            span = max(int(lam_grad_warmup_end) - int(lam_grad_warmup_start), 1)
+            alpha = float(epoch - int(lam_grad_warmup_start)) / float(span)
+            alpha = min(max(alpha, 0.0), 1.0)
+            lam_grad_epoch = float(lam_grad) * alpha
 
 
-            with torch.cuda.amp.autocast(enabled=amp):
-                y_pred = model(x)
-                # loss = criterion(y_pred, y) / grad_accum
-                # loss = masked_weighted_loss(y_pred, y, mask, lam_grad=lam_grad, lam_w=lam_w) / grad_accum
-                loss = masked_weighted_loss(y_pred, y, mask,
-                                                      lam_grad=lam_grad, lam_w=lam_w) / grad_accum
-                                                      
+        for b in train_loader:
+            # move to device (non_blocking works only if DataLoader pin_memory=True)
+            x = b["x"].to(device, non_blocking=non_blocking)
+            y = b["y"].to(device, non_blocking=non_blocking)
+            m = b["mask"].to(device, non_blocking=non_blocking)
+
+            # for channels_last performance
+            if use_cuda and channels_last:
+                x = x.contiguous(memory_format=torch.channels_last)
+
+            w_map = w_map.to(device)
+            with torch.amp.autocast(device_type="cuda", enabled=use_amp, dtype=amp_dtype):
+
+                p = model(x)
+                loss_base = masked_weighted_loss(
+                    p, y, m,
+                    w=w_map.to(p.dtype),
+                    lam_grad=lam_grad_epoch,
+                    lam_w=lam_w,
+                    base="huber",
+                    huber_beta=0.05,
+                    grad_mode="vector",
+                    grad_base=grad_base,
+                    multiscale=multiscale,
+                    ms_weight=ms_weight,
+                    grad_ds=2,   # <<<<<<<<<<<< big speed-up
+                )
+
+
+                if lam_ev > 0:
+                    # do inverse in float32 for stability
+                    p_ev = norm.inverse(p.float(), m.float())
+                    y_ev = norm.inverse(y.float(), m.float())
+                    loss_ev = ((p_ev - y_ev).abs() * m.float()).sum() / m.sum().clamp_min(1e-8)
+                    loss = loss_base + lam_ev * loss_ev
+                else:
+                    loss = loss_base
+
+                # gradient accumulation (normalize loss)
+                if grad_accum_steps > 1:
+                    loss = loss / grad_accum_steps
+
             scaler.scale(loss).backward()
+            accum += 1
 
-            if (i + 1) % grad_accum == 0:
-                if clip_grad is not None:
-                    scaler.unscale_(optimizer)
-                    nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
-                scaler.step(optimizer)
+            # bookkeeping (use un-divided loss for reporting)
+            with torch.no_grad():
+                px = float(m.sum().item())
+                # multiply back if we divided above
+                loss_item = float(loss.item()) * (grad_accum_steps if grad_accum_steps > 1 else 1.0)
+                tr_loss_sum += loss_item * px
+                tr_maeN_sum += float(mae_norm(p.float(), y.float(), m.float()).item()) * px
+                tr_px       += px
+
+            # step optimizer when we've accumulated enough
+            if accum >= grad_accum_steps:
+                if clip_grad and clip_grad > 0:
+                    scaler.unscale_(opt)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), float(clip_grad))
+                scaler.step(opt)
                 scaler.update()
-                optimizer.zero_grad(set_to_none=True)
+                opt.zero_grad(set_to_none=True)
+                accum = 0
 
-            running += loss.item() * grad_accum
+        # if epoch ended mid-accum, flush remaining grads
+        if accum > 0:
+            if clip_grad and clip_grad > 0:
+                scaler.unscale_(opt)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), float(clip_grad))
+            scaler.step(opt)
+            scaler.update()
+            opt.zero_grad(set_to_none=True)
 
-        train_loss = running / max(1, len(train_loader))
-        history["train_loss"].append(train_loss)
+        tr_loss = tr_loss_sum / max(tr_px, 1.0)
+        tr_maeN = tr_maeN_sum / max(tr_px, 1.0)
 
-        # -------- validate --------
+        # ---------------- validate ----------------
         model.eval()
-        val_loss = 0.0
-        with torch.no_grad(), torch.cuda.amp.autocast(enabled=amp):
-            for batch in val_loader:
-                x = batch["x"].to(device, non_blocking=True)
-                y = batch["y"].to(device, non_blocking=True)
-                mask = batch.get("mask", torch.ones_like(y)).to(device, non_blocking=True)
-                y_pred = model(x)
-                # val_loss += criterion(y_pred, y).item()
-                val_loss += masked_weighted_loss(y_pred, y, mask,
-                                     lam_grad=lam_grad, lam_w=lam_w).item()
+        va_loss_sum = va_maeN_sum = va_px = 0.0
+        va_abs_ev_sum = va_sq_ev_sum = 0.0
+
+        with torch.no_grad():
+            for b in val_loader:
+                x = b["x"].to(device, non_blocking=non_blocking)
+                y = b["y"].to(device, non_blocking=non_blocking)
+                m = b["mask"].to(device, non_blocking=non_blocking)
+
+                if use_cuda and channels_last:
+                    x = x.contiguous(memory_format=torch.channels_last)
+
+                with torch.amp.autocast(device_type="cuda", enabled=use_amp, dtype=amp_dtype):
+                    p = model(x)
+                    loss_b = masked_weighted_loss(
+                        p, y, m,
+                        w=w_map.to(p.dtype),
+                        lam_grad=lam_grad_epoch,
+                        lam_w=lam_w,
+                        base="huber",
+                        huber_beta=0.05,
+                        grad_mode="vector",
+                        grad_base=grad_base,
+                        multiscale=multiscale,     # try 0 first, then 1
+                        ms_weight=ms_weight,
+                    )
+
+                px = float(m.sum().item())
+                va_loss_sum += float(loss_b.item()) * px
+                va_maeN_sum += float(mae_norm(p.float(), y.float(), m.float()).item()) * px
+                va_px       += px
+
+                # abs_sum, sq_sum, _ = batch_error_sums_ev(p.float(), y.float(), m.float(), norm)
+                # va_abs_ev_sum += float(abs_sum.item())
+                # va_sq_ev_sum  += float(sq_sum.item())
 
 
-        val_loss /= max(1, len(val_loader))
-        history["val_loss"].append(val_loss)
 
-        if save_path and val_loss < best_val:
-            best_val = val_loss
+                is_multi = hasattr(norm, "y_keys") and hasattr(norm, "norms")
 
-            # pack everything needed at inference
-            ckpt = {
-                "model": model.state_dict(),
-                "norm": (float(norm.mu), float(norm.sigma), float(norm.eps)),
-                "inputs_mode": inputs_mode,
-                "in_ch": in_ch,
-            }
+                # inside validation loop:
+                if not is_multi and lam_ev >= 0:   # only meaningful for single Te-like channel
+                    abs_sum, sq_sum, _ = batch_error_sums_ev(p.float(), y.float(), m.float(), norm)
+                    va_abs_ev_sum += float(abs_sum.item())
+                    va_sq_ev_sum  += float(sq_sum.item())
+
+
+        va_loss    = va_loss_sum / max(va_px, 1.0)
+        va_maeN    = va_maeN_sum / max(va_px, 1.0)
+        va_MAE_eV  = va_abs_ev_sum / max(va_px, 1.0)
+        va_RMSE_eV = (va_sq_ev_sum / max(va_px, 1.0)) ** 0.5
+
+        # ---- record history ----
+        history["tr_mse"].append(tr_loss)
+        history["tr_maeN"].append(tr_maeN)
+        history["va_mse"].append(va_loss)
+        history["va_maeN"].append(va_maeN)
+        history["va_mae_eV"].append(va_MAE_eV)
+        history["va_rmse_eV"].append(va_RMSE_eV)
+        history["lr"].append(opt.param_groups[0]["lr"])
+
+        # ---- log & schedule ----
+        lr_before = opt.param_groups[0]["lr"]
+        if (epoch % max(int(log_every), 1)) == 0:
+
+            print(
+                f"Epoch {epoch:03d} | train {tr_loss:.4f} | val {va_loss:.4f} "
+                f"| lr {lr_before:.2e} | lam_grad_eff {lam_grad_epoch:.3g}"
+            )
+
+
+        scheduler.step(va_loss)
+        lr_after = opt.param_groups[0]["lr"]
+        if lr_after < lr_before and (epoch % max(int(log_every), 1)) == 0:
+            print(f"  ↳ ReduceLROnPlateau: lr {lr_before:.2e} → {lr_after:.2e}")
+
+        # ---- checkpoint best ----
+        improved = (best_val - va_loss) > float(early_stop_min_delta)
+        if improved:
+            best_val = va_loss
+            no_improve = 0
+
+            mu, std = (None, None)
             if param_scaler is not None:
                 mu, std = param_scaler
-                if mu is not None:
-                    ckpt["param_mu"]  = mu.tolist() if hasattr(mu, "tolist") else mu
-                    ckpt["param_std"] = std.tolist() if hasattr(std, "tolist") else std
 
+            ckpt = {
+                "epoch": epoch,
+                "model": model.state_dict(),
+                "opt": opt.state_dict(),
+                "sched": scheduler.state_dict(),
+                "scaler": scaler.state_dict(),
+                "best_val": float(best_val),
+                "norm": _norm_to_ckpt(norm),
+                "in_ch": in_ch, "out_ch": out_ch, "base": base,
+                "inputs_mode": inputs_mode,
+                "param_mu": mu,
+                "param_std": std,
+                "param_scaler": (mu, std),
+                "history": history,
+            }
             torch.save(ckpt, save_path)
+        else:
+            no_improve += 1
 
-        # (optional) write `history` to disk each epoch if history_path is set
+        if early_stop_patience is not None and no_improve >= int(early_stop_patience):
+            print(f"[early-stop] no val improvement for {no_improve} epochs; stopping at epoch {epoch:03d}")
+            break
 
-    return (model, history) if return_history else (model, None)
+    # optional persist of history
+    if history_path is not None:
+        np.savez(history_path, **history)
 
+    return (model, history) if return_history else model
+
+def _norm_to_ckpt(norm):
+    # Single-channel normalizers
+    if all(hasattr(norm, a) for a in ("mu", "sigma", "eps")):
+        pack = {"kind": norm.__class__.__name__,
+                "mu": norm.mu, "sigma": norm.sigma, "eps": float(norm.eps)}
+        if hasattr(norm, "scale"):
+            pack["scale"] = float(norm.scale)
+        return pack
+    # Multi-channel normalizer: assume it has y_keys + norms dict
+    if hasattr(norm, "y_keys") and hasattr(norm, "norms"):
+        pack = {"kind": norm.__class__.__name__, "y_keys": list(norm.y_keys), "norms": {}}
+        for k, n in norm.norms.items():
+            pack["norms"][k] = _norm_to_ckpt(n)
+        return pack
+    # Fallback
+    return {"kind": norm.__class__.__name__}

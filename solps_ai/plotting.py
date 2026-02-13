@@ -2,6 +2,67 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 from .predict import predict_te  # uses norm.inverse to return eV :contentReference[oaicite:2]{index=2}
+from .data import _load_truth_and_params
+
+
+def plot_ae_recon_one(*, ae, norm, sample, device, title=""):
+    ae.eval()
+
+    x = sample["x"].unsqueeze(0).to(device)
+    y = sample["y"].unsqueeze(0).to(device)
+    m = sample["mask"].unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        p = ae(x)
+
+    # back to physical space
+    y_phys = norm.inverse(y, m).cpu().numpy()[0]   # (C,H,W)
+    p_phys = norm.inverse(p, m).cpu().numpy()[0]
+
+    mask2d = (m.cpu().numpy()[0, 0] > 0.5)
+
+    C = y_phys.shape[0]
+
+    fig, axes = plt.subplots(
+        2, C,
+        figsize=(4*C, 6),
+        squeeze=False,
+        constrained_layout=True
+    )
+
+    for ci in range(C):
+        yt = y_phys[ci].copy()
+        yp = p_phys[ci].copy()
+
+        yt[~mask2d] = np.nan
+        yp[~mask2d] = np.nan
+
+        vmin = np.nanmin(yt)
+        vmax = np.nanmax(yt)
+
+        im0 = axes[0, ci].imshow(
+            yt, origin="lower", aspect="auto",
+            vmin=vmin, vmax=vmax
+        )
+        axes[0, ci].set_title(f"{title} true (ch {ci})")
+        fig.colorbar(im0, ax=axes[0, ci], fraction=0.046, pad=0.02)
+
+        im1 = axes[1, ci].imshow(
+            yp, origin="lower", aspect="auto",
+            vmin=vmin, vmax=vmax
+        )
+        axes[1, ci].set_title(f"{title} pred (ch {ci})")
+        fig.colorbar(im1, ax=axes[1, ci], fraction=0.046, pad=0.02)
+
+        axes[0, ci].set_xticks([])
+        axes[0, ci].set_yticks([])
+        axes[1, ci].set_xticks([])
+        axes[1, ci].set_yticks([])
+
+    plt.show()
+
+
+
 
 def display_random_samples(train_loader, norm, n=4):
     ds = train_loader.dataset                 # this is a Subset
@@ -33,7 +94,62 @@ def display_random_samples(train_loader, norm, n=4):
         axes[2,j].set_title("Target Te (eV)"); axes[2,j].axis('off'); fig.colorbar(im2, ax=axes[2,j], fraction=0.046, pad=0.04)
     plt.suptitle("Random training samples"); plt.tight_layout(); plt.show()
 
+def get_subset_indices(loader):
+    ds = loader.dataset
+    if hasattr(ds, "indices"):  # Subset
+        return np.array(ds.indices, dtype=int)
+    raise TypeError("val_loader.dataset is not a Subset; can't recover original indices.")
 
+def plot_random_val_examples_ae(
+    *, npz_path, val_loader, model, norm, R2d, Z2d, device,
+    n=4, seed=0
+):
+    val_idx = get_subset_indices(val_loader)
+    rng = np.random.default_rng(seed)
+    picks = rng.choice(val_idx, size=min(n, len(val_idx)), replace=False)
+
+    for idx in picks:
+        Te_true, mask_ref, _params_raw, _ = _load_truth_and_params(npz_path, idx=int(idx))
+
+        Te_pred = predict_te_ae(model, norm, Te_true, mask_ref, device=device)
+
+        plot_truth_pred_percent_error_RZ(
+            Te_true, Te_pred, mask_ref, R2d, Z2d,
+            use_smape=False, vmax_pct=150
+        )
+
+
+
+@torch.no_grad()
+def predict_te_ae(model, norm, te_true, mask, device=None):
+    """
+    te_true: (H,W) or (1,H,W) numpy/torch
+    mask:    (H,W) or (1,H,W) numpy/torch
+    returns: Te_pred (H,W) numpy
+    """
+    model.eval()
+    if device is None:
+        device = next(model.parameters()).device
+
+    # to torch (1,1,H,W)
+    te = torch.from_numpy(te_true).float() if isinstance(te_true, np.ndarray) else te_true.float()
+    m  = torch.from_numpy(mask).float()    if isinstance(mask, np.ndarray) else mask.float()
+
+    if te.dim() == 2: te = te.unsqueeze(0).unsqueeze(0)
+    if te.dim() == 3: te = te.unsqueeze(0)
+    if m.dim()  == 2: m  = m.unsqueeze(0).unsqueeze(0)
+    if m.dim()  == 3: m  = m.unsqueeze(0)
+
+    m = (m > 0.5).float().to(device)
+    te = torch.nan_to_num(te, nan=0.0, posinf=0.0, neginf=0.0).to(device)
+
+    # normalize using your masked normalizer
+    z_in = norm.transform(te, m)           # (1,1,H,W)
+
+    z_out = model(z_in)                   # (1,1,H,W)
+    te_rec = norm.inverse(z_out, m)        # back to eV
+
+    return te_rec.squeeze().detach().cpu().numpy().astype(np.float32)
 
 def _plot_training_curves(history, title="Training"):
     """
@@ -296,63 +412,180 @@ def show_case_prediction(
 
     return i, params_scaled, params_raw, fig
 
+import numpy as np
+import torch
 
-# import numpy as np
-# from scipy.interpolate import RegularGridInterpolator
-# import matplotlib.pyplot as plt
+def to_np(a):
+    if isinstance(a, torch.Tensor):
+        return a.detach().cpu().numpy()
+    return np.asarray(a)
 
-# # 1) define raster axes (same as Option 1)
-# H, W = Te_map_eV.shape
-# Rmin, Rmax = float(R2d.min()), float(R2d.max())
-# Zmin, Zmax = float(Z2d.min()), float(Z2d.max())
-# R_axis = np.linspace(Rmin, Rmax, W)
-# Z_axis = np.linspace(Zmin, Zmax, H)
+def inverse_from_norm(y_norm_hw, norm, mask_hw=None):
+    """
+    y_norm_hw: (H,W) normalized model output (not physical)
+    Returns physical Te (H,W).
+    """
+    y = to_np(y_norm_hw).astype(np.float32)
+    m = None if mask_hw is None else (to_np(mask_hw) > 0.5).astype(np.float32)
 
-# # 2) build interpolator from raster grid -> Te
-# f = RegularGridInterpolator((Z_axis, R_axis), Te_map_eV, bounds_error=False, fill_value=np.nan)
+    # norm.inverse expects (1,1,H,W) typically
+    y_t = torch.from_numpy(y)[None, None, :, :]
+    if m is not None:
+        m_t = torch.from_numpy(m)[None, None, :, :]
+    else:
+        m_t = None
 
-# # 3) sample at SOLPS mesh centers
-# pts = np.stack([Z2d.ravel(), R2d.ravel()], axis=-1)
-# Te_mesh = f(pts).reshape(Z2d.shape)   # (98, 38)
+    with torch.no_grad():
+        try:
+            phys = norm.inverse(y_t, mask=m_t)
+        except TypeError:
+            phys = norm.inverse(y_t)
 
-# # 4) make cell corners from centers (robust edge extrapolation)
-# def centers_to_corners(Rc, Zc):
-#     Rc = np.asarray(Rc, float); Zc = np.asarray(Zc, float)
-#     H, W = Rc.shape
-#     # pad by linear extrapolation (one row/col on each side)
-#     Rp = np.empty((H+2, W+2)); Zp = np.empty((H+2, W+2))
-#     Rp[1:-1,1:-1] = Rc; Zp[1:-1,1:-1] = Zc
-#     # rows
-#     Rp[0,1:-1]  = 2*Rc[0,:]   - Rc[1,:]
-#     Rp[-1,1:-1] = 2*Rc[-1,:]  - Rc[-2,:]
-#     Zp[0,1:-1]  = 2*Zc[0,:]   - Zc[1,:]
-#     Zp[-1,1:-1] = 2*Zc[-1,:]  - Zc[-2,:]
-#     # cols
-#     Rp[1:-1,0]  = 2*Rc[:,0]   - Rc[:,1]
-#     Rp[1:-1,-1] = 2*Rc[:,-1]  - Rc[:,-2]
-#     Zp[1:-1,0]  = 2*Zc[:,0]   - Zc[:,1]
-#     Zp[1:-1,-1] = 2*Zc[:,-1]  - Zc[:,-2]
-#     # corners
-#     Rp[0,0]     = 2*Rp[0,1]   - Rp[0,2]
-#     Rp[0,-1]    = 2*Rp[0,-2]  - Rp[0,-3]
-#     Rp[-1,0]    = 2*Rp[-1,1]  - Rp[-1,2]
-#     Rp[-1,-1]   = 2*Rp[-1,-2] - Rp[-1,-3]
-#     Zp[0,0]     = 2*Zp[0,1]   - Zp[0,2]
-#     Zp[0,-1]    = 2*Zp[0,-2]  - Zp[0,-3]
-#     Zp[-1,0]    = 2*Zp[-1,1]  - Zp[-1,2]
-#     Zp[-1,-1]   = 2*Zp[-1,-2] - Zp[-1,-3]
-#     # average 4 neighbors to get (H+1, W+1) corners
-#     Rcorn = 0.25*(Rp[0:-1,0:-1] + Rp[0:-1,1:] + Rp[1:,0:-1] + Rp[1:,1:])
-#     Zcorn = 0.25*(Zp[0:-1,0:-1] + Zp[0:-1,1:] + Zp[1:,0:-1] + Zp[1:,1:])
-#     return Rcorn, Zcorn
+    phys = phys.squeeze().cpu().numpy()
+    return phys
 
-# Rcorn, Zcorn = centers_to_corners(R2d, Z2d)
+import matplotlib.pyplot as plt
+import numpy as np
 
-# # 5) plot on the SOLPS mesh
-# vmin, vmax = np.nanpercentile(Te_mesh, [1, 99])
-# plt.figure(figsize=(6,6))
-# pm = plt.pcolormesh(Rcorn, Zcorn, Te_mesh, shading='auto', vmin=vmin, vmax=vmax)
-# cb = plt.colorbar(pm); cb.set_label('Te [eV]')
-# plt.gca().set_aspect('equal', adjustable='box')
-# plt.xlabel('R [m]'); plt.ylabel('Z [m]'); plt.title('Te (eV) on SOLPS mesh')
-# plt.show()
+def plot_truth_pred_percent_error_RZ(
+    Te_true, Te_pred, mask, R2d, Z2d,
+    use_smape=False, eps=1e-3, vmax_pct=150
+):
+    m = mask > 0.5
+
+    Te_true_m = np.where(m, Te_true, np.nan)
+    Te_pred_m = np.where(m, Te_pred, np.nan)
+
+    if use_smape:
+        denom = (np.abs(Te_true_m) + np.abs(Te_pred_m) + eps)
+        pct_m = 200.0 * np.abs(Te_pred_m - Te_true_m) / denom
+        err_title = "sMAPE [%]"
+    else:
+        denom = np.maximum(Te_true_m, eps)
+        pct_m = 100.0 * np.abs(Te_pred_m - Te_true_m) / denom
+        err_title = "Percent error [%]"
+
+    vmin = np.nanpercentile(Te_true_m, 1)
+    vmax = np.nanpercentile(Te_true_m, 99)
+    vmax_err = min(np.nanpercentile(pct_m, 95), vmax_pct)
+
+    fig, axes = plt.subplots(1, 3, figsize=(17, 5), constrained_layout=True)
+
+    # ---- Truth ----
+    im0 = axes[0].pcolormesh(R2d, Z2d, Te_true_m, shading="auto", cmap="inferno", vmin=vmin, vmax=vmax)
+    axes[0].set_title("Truth Te [eV]")
+    plt.colorbar(im0, ax=axes[0])
+
+    # ---- Prediction ----
+    im1 = axes[1].pcolormesh(R2d, Z2d, Te_pred_m, shading="auto", cmap="inferno", vmin=vmin, vmax=vmax)
+    axes[1].set_title("Predicted Te [eV]")
+    plt.colorbar(im1, ax=axes[1])
+
+    # ---- Percent error ----
+    im2 = axes[2].pcolormesh(R2d, Z2d, pct_m, shading="auto", cmap="magma", vmin=0, vmax=vmax_err)
+    axes[2].set_title(err_title)
+    plt.colorbar(im2, ax=axes[2])
+
+    for ax in axes:
+        ax.set_xlabel("R [m]")
+        ax.set_ylabel("Z [m]")
+        ax.set_aspect("equal")
+
+    valid = np.isfinite(pct_m)
+    print(f"Mean % error: {np.nanmean(pct_m[valid]):.2f} | 90th %: {np.nanpercentile(pct_m[valid],90):.2f}")
+
+    plt.show()
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+def plot_truth_pred_diff(Te_true, Te_pred, mask, fname="Te_truth_pred_diff.png",
+                         vmax_diff=None, cmap="RdBu_r"):
+    """
+    Plot true, predicted, and (pred - true) difference maps.
+
+    Parameters
+    ----------
+    Te_true : ndarray
+        True field, shape (H, W)
+    Te_pred : ndarray
+        Predicted field, shape (H, W)
+    mask : ndarray
+        Mask array, >0.5 means valid region
+    fname : str
+        Output filename
+    vmax_diff : float or None
+        Optional fixed color limit for difference map; if None, auto-scaled at 99th percentile
+    cmap : str
+        Colormap for difference plot
+    """
+    m = mask > 0.5
+    Te_true_m = np.where(m, Te_true, np.nan)
+    Te_pred_m = np.where(m, Te_pred, np.nan)
+    diff_m    = np.where(m, Te_pred - Te_true, np.nan)
+
+    # Color limits for true/pred plots
+    vmin = np.nanpercentile(Te_true_m, 1)
+    vmax = np.nanpercentile(Te_true_m, 99)
+
+    # Symmetric difference scaling
+    if vmax_diff is None:
+        vmax_diff = np.nanpercentile(np.abs(diff_m), 99)
+    vmin_diff = -vmax_diff
+
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5), constrained_layout=True)
+
+    # True field
+    # im0 = axes[0].imshow(Te_true_m, origin='lower', cmap='inferno', vmin=vmin, vmax=vmax)
+
+    # replace each pcolormesh call with:
+    im0 = axes[0].imshow(Te_true_m, origin="lower", extent=[R2d.min(), R2d.max(), Z2d.min(), Z2d.max()],
+                        cmap="inferno", vmin=vmin, vmax=vmax, aspect="equal")
+
+
+    axes[0].set_title("Truth $T_e$ [eV]")
+    plt.colorbar(im0, ax=axes[0], fraction=0.046, pad=0.04)
+
+    # Predicted field
+    # im1 = axes[1].imshow(Te_pred_m, origin='lower', cmap='inferno', vmin=vmin, vmax=vmax)
+
+    # replace each pcolormesh call with:
+    im1 = axes[1].imshow(Te_pred_m, origin="lower", extent=[R2d.min(), R2d.max(), Z2d.min(), Z2d.max()],
+                        cmap="inferno", vmin=vmin, vmax=vmax, aspect="equal")
+
+
+    axes[1].set_title("Predicted $T_e$ [eV]")
+    plt.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)
+
+    # Difference
+    im2 = axes[2].imshow(diff_m, origin='lower', extent=[R2d.min(), R2d.max(), Z2d.min(), Z2d.max()],
+                         cmap=cmap, vmin=vmin_diff, vmax=vmax_diff)
+    axes[2].set_title("Error (pred − target) [eV]")
+    plt.colorbar(im2, ax=axes[2], fraction=0.046, pad=0.04)
+
+    for ax in axes:
+        ax.set_xlabel("X (pixels)")
+        ax.set_ylabel("Y (pixels)")
+
+    # Stats
+    valid = np.isfinite(diff_m)
+    mae = np.nanmean(np.abs(diff_m[valid])) if np.any(valid) else np.nan
+    rmse = np.sqrt(np.nanmean(diff_m[valid]**2)) if np.any(valid) else np.nan
+    print(f"MAE={mae:.2e} eV, RMSE={rmse:.2e} eV, vmax_diff={vmax_diff:.2e} eV")
+
+    # Add text on diff panel
+    axes[2].text(0.02, 0.98, f"MAE={mae:.1e} eV\nRMSE={rmse:.1e} eV",
+                 transform=axes[2].transAxes, va='top', ha='left', color='white',
+                 fontsize=10, bbox=dict(facecolor='black', alpha=0.4, lw=0))
+
+    plt.savefig(fname, dpi=300)
+    plt.show()
+
+
+
+
+
+#         print("No valid pixels to compute percent error (mask/finiteness issue).")
+
+#     plt.show()
+#     return fig, axes
