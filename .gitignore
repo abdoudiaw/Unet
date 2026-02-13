@@ -1,0 +1,9 @@
+# Ignore all numpy datasets inside scripts/data
+scripts/data/*.npz
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Optional but common for ML workflows
+.ipynb_checkpoints/
+
