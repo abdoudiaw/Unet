@@ -1,5 +1,5 @@
-# SOLPS-AI: Edge Plasma Surrogate Workflow
-
+# SOLARIS: Scrape-Off Layer AI for Reconstruction and Integrated Surrogates
+ 
 Mask-aware surrogate models for SOLPS-ITER edge plasma data.
 
 Current project workflow supports:
