@@ -1,28 +1,87 @@
-# SOLPS-AI — U-Net Surrogate for 2D SOLPS-ITER Profiles
+# SOLPS-AI: Edge Plasma Surrogate Workflow
 
-![status](https://img.shields.io/badge/status-experimental-8a2be2)
-![python](https://img.shields.io/badge/python-≥3.9-3776ab?logo=python)
-![pytorch](https://img.shields.io/badge/PyTorch-≥2.1-ee4c2c?logo=pytorch)
-![license](https://img.shields.io/badge/physics-aware-darkgreen)
+Mask-aware surrogate models for SOLPS-ITER edge plasma data.
 
-**Goal:** learn fast, mask-aware surrogates that map **inputs** (puff rates, power, transport coeffs) to **full 2D plasma fields** (starting with \(T_e\)); later extend to **EIRENE** outputs.
+Current project workflow supports:
 
-> 🔵 Inputs → 🟣 U-Net → 🟡 2D \(T_e\) (eV)
+1. **Forward model**  
+   `params + mask -> Te,Ti,ne,ni,ua,Sp,Qe,Qi,Sm`  
+   Script: `scripts/run_conditional_unet_pipeline.py`
 
----
+2. **Inverse + cycle evaluation**  
+   `target fields -> recovered params -> forward reconstruction`  
+   Script: `scripts/eval_inverse_cycle_conditional_unet.py`
 
-## ✨ Features
+3. **Plasma-to-sources model**  
+   `Te,Ti,ne,ni,ua (+optional params) + mask -> Sp,Qe,Qi,Sm`  
+   Script: `scripts/run_source_from_plasma_pipeline.py`
 
-- **U-Net encoder–decoder** with skip connections (pixel-wise regression).
-- **Physics-aware loss:** masked MSE + edge weighting + ∇ penalty; optional eV-space term.
-- **Mixed precision (AMP)**, **ReduceLROnPlateau** scheduler, best-ckpt saving.
-- **Training history & plots** (normalized MSE/MAE + physical MAE/RMSE in eV).
+4. **Mesh-native paper evaluation/plots**  
+   Script: `scripts/plot_paper_evaluation_mesh.py`  
+   Source-model evaluator: `scripts/eval_source_from_plasma_mesh.py`
 
----
+5. **One-shot full workflow runner**  
+   Script: `scripts/run_full_workflow.sh`
 
-## 📦 Install
+## Install
 
 ```bash
-# from repo root
 pip install -e .
+```
 
+## Data Expectations
+
+The training/eval scripts expect an `.npz` dataset with:
+
+- `Y`: `(N,C,H,W)` fields
+- `y_keys`: field names matching channels in `Y`
+- `mask`: `(N,H,W)` or `(H,W)`
+- `params` (or `X`): `(N,P)` scalar inputs
+
+Typical current field set:
+`Te,Ti,ne,ni,ua,Sp,Qe,Qi,Sm`
+
+Note: some datasets may not include `Qp`. Scripts now handle missing keys by explicit key selection.
+
+## Quick Start (Recommended)
+
+From `scripts/`:
+
+```bash
+NPZ_PATH=data/solps_native_all_qc.npz \
+BASE_DIR="/content/drive/MyDrive/SOLPS_DB" \
+./run_full_workflow.sh
+```
+
+This runs:
+
+1. Forward-model sweep training
+2. Forward-model mesh plots + paper grids
+3. Inverse/cycle evaluation
+4. Plasma->sources training
+5. Plasma->sources mesh plots + paper grid
+
+## Key Outputs
+
+- `outputs/cond_unet.pt`
+- `outputs/paper_eval_mesh_all_abs/`
+- `outputs/inverse_cycle_metrics.csv`
+- `outputs/inverse_param_correlation.png`
+- `outputs/inverse_param_correlation.csv`
+- `outputs/source_from_plasma.pt`
+- `outputs/source_eval_mesh_abs/`
+
+## Important Plot Notes
+
+- Use **absolute error** as primary map (`--error-mode abs`), especially for signed channels.
+- `plot_paper_evaluation_mesh.py` supports:
+  - `--paper-grid`
+  - `--paper-grid-rows 3`
+  - `--paper-grid-split-groups` (separate plasma/source figures)
+  - `--log-display auto` (log display for density-like/source-like fields)
+  - `--log-metrics` (quantitative log-space metrics)
+
+## Current Scope / Next Step
+
+Current deployment models are direct conditional U-Nets (no mandatory latent bottleneck).
+Planned next extension: lightweight manifold regularizer (frozen encoder latent consistency) as an ablation on top of this baseline.
