@@ -1,3 +1,8 @@
+# Copyright 2025-2026 Oak Ridge National Laboratory
+# @authors: Abdourahmane (Abdou) Diaw - diawa@ornl.gov
+#
+# SPDX-License-Identifier: MIT
+
 import argparse
 import csv
 import json
@@ -12,8 +17,8 @@ from scipy.stats import spearmanr
 import quixote
 from quixote import SolpsData
 
-from solps_ai.predict import load_checkpoint, predict_fields, scale_params
-from solps_ai.utils import pick_device
+from solpex.predict import load_checkpoint, predict_fields, scale_params
+from solpex.utils import pick_device
 
 SIGNED_FIELDS = {"ua", "Qp", "Qe", "Qi", "Sm"}
 SPARSE_POSITIVE_FIELDS = {"Sp"}
@@ -868,3 +873,16 @@ def main():
 
 if __name__ == "__main__":
     main()
+#
+#python3 plot_paper_evaluation_mesh.py \
+#    --npz data/solps_native_all_qc.npz \
+#    --ckpt outputs/cond_unet.pt \
+#    --base-dir "/Users/42d/ORNL Dropbox/Abdou Diaw/SOLPS_DB/ens__DIII-D__APP-FPP__D_C_Ne__ss__lhs__20250124_144649" \
+#    --all-fields \
+#    --paper-grid \
+#    --paper-grid-rows 3 \
+#    --paper-grid-split-groups \
+#    --error-mode auto \
+#    --error-sign absolute \
+#    --log-display auto \
+#    --outdir outputs/paper_eval_mesh_auto

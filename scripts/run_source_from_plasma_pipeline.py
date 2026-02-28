@@ -1,3 +1,8 @@
+# Copyright 2025-2026 Oak Ridge National Laboratory
+# @authors: Abdourahmane (Abdou) Diaw - diawa@ornl.gov
+#
+# SPDX-License-Identifier: MIT
+
 import json
 import os
 import shutil
@@ -6,14 +11,14 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset, Subset
 
-from solps_ai.data import (
+from solpex.data import (
     MaskedLogStandardizer,
     MaskedSymLogStandardizer,
     MultiChannelNormalizer,
     fit_param_scaler,
 )
-from solps_ai.train import train_unet
-from solps_ai.utils import pick_device, sample_from_loader
+from solpex.train import train_unet
+from solpex.utils import pick_device, sample_from_loader
 
 
 def _env_int(name, default):

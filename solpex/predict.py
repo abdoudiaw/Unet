@@ -1,3 +1,8 @@
+# Copyright 2025-2026 Oak Ridge National Laboratory
+# @authors: Abdourahmane (Abdou) Diaw - diawa@ornl.gov
+#
+# SPDX-License-Identifier: MIT
+
 import numpy as np
 import torch
 from .data import (

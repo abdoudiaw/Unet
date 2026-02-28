@@ -1,3 +1,8 @@
+# Copyright 2025-2026 Oak Ridge National Laboratory
+# @authors: Abdourahmane (Abdou) Diaw - diawa@ornl.gov
+#
+# SPDX-License-Identifier: MIT
+
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, TensorDataset
@@ -93,7 +98,6 @@ def train_param2z(
 
     return model, hist
 
-# solps_ai/latent.py
 import numpy as np
 import torch
 from torch.utils.data import DataLoader

@@ -1,5 +1,5 @@
 # Copyright 2025-2026 Oak Ridge National Laboratory
-# @authors: :Abdourahmane (Abdou) Diaw- diawa@ornl.gov
+# @authors: Abdourahmane (Abdou) Diaw - diawa@ornl.gov
 #
 # SPDX-License-Identifier: MIT
 
@@ -13,14 +13,14 @@ import matplotlib.gridspec as gridspec
 # Set random seed
 np.random.seed(4321)
 
-# Imports from solps_ai
-from solps_ai import data
-from solps_ai.data import MaskedLogStandardizer, MaskedSymLogStandardizer
-from solps_ai.models import UNet, bottleneck_to_z, ParamToZ, z_to_bottleneck
-from solps_ai.train import train_unet
-from solps_ai.latent import extract_z_dataset, train_param2z
-from solps_ai.utils import pick_device, sample_from_loader, eval_param2z_one, nearest_neighbor_in_Z
-from solps_ai.plotting import plot_ae_recon_one
+# Imports from solpex
+from solpex import data
+from solpex.data import MaskedLogStandardizer, MaskedSymLogStandardizer
+from solpex.models import UNet, bottleneck_to_z, ParamToZ, z_to_bottleneck
+from solpex.train import train_unet
+from solpex.latent import extract_z_dataset, train_param2z
+from solpex.utils import pick_device, sample_from_loader, eval_param2z_one, nearest_neighbor_in_Z
+from solpex.plotting import plot_ae_recon_one
 
 # ============================================================================
 # Helper Functions

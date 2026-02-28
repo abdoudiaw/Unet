@@ -1,3 +1,8 @@
+# Copyright 2025-2026 Oak Ridge National Laboratory
+# @authors: Abdourahmane (Abdou) Diaw - diawa@ornl.gov
+#
+# SPDX-License-Identifier: MIT
+
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader, Subset
@@ -19,7 +24,6 @@ def normalize_coords(R2d, Z2d, mask=None):
 def load_geometry_h5(fname):
     """Load (R,Z) grids from geom_ref.h5."""
     with h5py.File(fname, "r") as f:
-        print(f.keys())
         R2d = np.array(f["R2D"])
         Z2d = np.array(f["Z2D"])
     return R2d, Z2d
@@ -69,8 +73,6 @@ class MaskedLogStandardizer:
             mc = (mc > 0.5).float()
             yc = torch.nan_to_num(yc, nan=0.0, posinf=0.0, neginf=0.0)
 
-#            z = torch.log(yc + float(self.eps))
-            # ALWAYS use this
             z = torch.log(torch.clamp(yc, min=0) + self.eps)
             z = torch.where(torch.isfinite(z), z, torch.zeros_like(z))
             z = z * mc
@@ -93,7 +95,6 @@ class MaskedLogStandardizer:
 
     def transform(self, y, mask):
         y = torch.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
-        # ALWAYS use this
         z = torch.log(torch.clamp(y, min=0) + self.eps)
 
         mu = self.mu.to(z.device)
@@ -379,7 +380,6 @@ class SOLPSDataset(Dataset):
             channels.append(params.view(P, 1, 1).expand(P, H, W))
 
         x = torch.cat(channels, dim=0)  # (Cin,H,W)
-#        return {"x": x, "y": y, "mask": mask, "params": params, "idx": int(idx)}
 
         item = {
             "x": x, "y": y, "mask": mask,
@@ -387,9 +387,6 @@ class SOLPSDataset(Dataset):
             "idx": int(idx),
         }
         return item
-    
-
-#        return {"x": x, "y": y, "mask": mask, "params": params}
 
 def fit_param_scaler(raw_params_train):
     x = raw_params_train.astype(np.float64)
@@ -403,53 +400,6 @@ def apply_param_scaler(dataset, mu, std):
     if dataset.params.size and mu is not None:
         dataset.params = (dataset.params.astype(np.float32) - mu) / std
 
-
-class SelectYKey(Dataset):
-    """
-    Wraps a SOLPSDataset that returns dicts containing "y" and optionally exposes .y_keys.
-    Slices output channels so training sees a single channel: (1,H,W).
-    """
-    def __init__(self, base_ds, y_key="Te"):
-        self.base = base_ds
-        self.y_key = y_key
-
-        # Find channel index
-        y_keys = getattr(base_ds, "y_keys", None)
-        if y_keys is None:
-            # fallback: assume Te is channel 0
-            self.k = 0
-            self._y_keys = np.array([y_key])
-        else:
-            y_keys_arr = np.array(y_keys).astype(str)
-            matches = np.where(y_keys_arr == str(y_key))[0]
-            if matches.size == 0:
-                raise KeyError(f"y_key={y_key!r} not found in y_keys={list(y_keys_arr)}")
-            self.k = int(matches[0])
-            self._y_keys = np.array([str(y_key)])
-
-        # keep convenient passthroughs if you use them elsewhere
-        self.params = getattr(base_ds, "params", None)
-        self.y_keys = self._y_keys
-
-    def __len__(self):
-        return len(self.base)
-
-    def __getitem__(self, i):
-        d = self.base[i]  # expects dict
-        y = d["y"]        # shape (C,H,W) or (1,H,W)
-
-        # Slice to (1,H,W)
-        if y.ndim == 3:
-            y = y[self.k:self.k+1, :, :]
-        elif y.ndim == 4:
-            # just in case some dataset returns (C,1,H,W) etc
-            y = y[:, self.k:self.k+1, :, :]
-        else:
-            raise ValueError(f"Unexpected y shape: {tuple(y.shape)}")
-
-        d = dict(d)
-        d["y"] = y
-        return d
 
 def make_loaders(
     npz_path,
@@ -548,7 +498,6 @@ def make_loaders(
     )
 
 
-#    P = train_set.dataset.params.shape[1] if inputs_mode != "autoencoder" else 0
     P = train_set.dataset.params.shape[1] if hasattr(train_set.dataset, "params") else 0
 
     H, W = train_set[0]["mask"].shape[-2:]

@@ -1,6 +1,13 @@
+# Copyright 2025-2026 Oak Ridge National Laboratory
+# @authors: Abdourahmane (Abdou) Diaw - diawa@ornl.gov
+#
+# SPDX-License-Identifier: MIT
+
+from __future__ import annotations
+
 import numpy as np
 import torch
-import os 
+import os
 from .losses import masked_weighted_loss, mae_norm, batch_error_sums_ev, edge_weights
 
 

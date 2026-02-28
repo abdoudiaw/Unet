@@ -1,6 +1,11 @@
+# Copyright 2025-2026 Oak Ridge National Laboratory
+# @authors: Abdourahmane (Abdou) Diaw - diawa@ornl.gov
+#
+# SPDX-License-Identifier: MIT
+
 import h5py, time, numpy as np
 import torch
-from solps_ai.models import UNet, bottleneck_to_z, ParamToZ
+from .models import UNet, bottleneck_to_z, ParamToZ
 
 
 def sample_from_loader(loader, k=0):
@@ -16,7 +21,7 @@ def pick_device():
     if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
-    
+
 def scale_params_for_inference(params, param_mu, param_std):
     params = np.asarray(params, dtype=np.float32)
     if param_mu is not None and param_std is not None:
@@ -37,39 +42,10 @@ def save_geometry_h5(path, r2d, z2d, case_name=None, units="m", level=4):
         f.attrs["created"] = time.strftime("%Y-%m-%d %H:%M:%S")
         if case_name is not None: f.attrs["case_name"] = str(case_name)
 
-def load_geometry_h5(path):
-    with h5py.File(path, "r") as f:
-        return f["R2D"][:], f["Z2D"][:]
-
-def normalize_coords(R2d, Z2d, mask=None):
-    if mask is not None:
-        m = mask > 0.5
-        Rmin, Rmax = R2d[m].min(), R2d[m].max()
-        Zmin, Zmax = Z2d[m].min(), Z2d[m].max()
-    else:
-        Rmin, Rmax = R2d.min(), R2d.max()
-        Zmin, Zmax = Z2d.min(), Z2d.max()
-
-    Rn = 2.0 * (R2d - Rmin) / (Rmax - Rmin) - 1.0
-    Zn = 2.0 * (Z2d - Zmin) / (Zmax - Zmin) - 1.0
-    return Rn.astype(np.float32), Zn.astype(np.float32)
-
-def load_geometry_h5(fname):
-    """Load (R,Z) grids from geom_ref.h5."""
-    with h5py.File(fname, "r") as f:
-        print(f.keys())
-        R2d = np.array(f["R2D"])
-        Z2d = np.array(f["Z2D"])
-    return R2d, Z2d
-
 def nearest_neighbor_in_Z(z_pred, Z_ref):
     # z_pred: (z_dim,), Z_ref: (N,z_dim)
     d2 = np.sum((Z_ref - z_pred[None,:])**2, axis=1)
     return int(np.argmin(d2)), float(d2.min())
-
-import numpy as np
-import torch
-from solps_ai.models import bottleneck_to_z
 
 @torch.no_grad()
 def eval_param2z_one(

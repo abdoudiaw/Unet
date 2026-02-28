@@ -1,3 +1,8 @@
+# Copyright 2025-2026 Oak Ridge National Laboratory
+# @authors: Abdourahmane (Abdou) Diaw - diawa@ornl.gov
+#
+# SPDX-License-Identifier: MIT
+
 import argparse
 import os
 
@@ -103,7 +108,7 @@ def main():
     make_panel_b(axes[1])
 
     fig.suptitle(
-        "SOLPS-AI Surrogate Workflow: Forward, Inverse/Cycle, and Plasma-to-Source Modeling",
+        "SOLPEx Surrogate Workflow: Forward, Inverse/Cycle, and Plasma-to-Source Modeling",
         fontsize=14, y=1.02
     )
     for ext in fmts:

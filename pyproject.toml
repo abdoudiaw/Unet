@@ -3,9 +3,9 @@ requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "solps-ai"          # distribution name (can have hyphen)
+name = "solpex"
 version = "0.1.0"
-description = "U-Net SOLPS Te predictor"
+description = "SOLPEx: ML surrogate models for SOLPS-ITER edge plasma predictions"
 requires-python = ">=3.9"
 dependencies = [
   "numpy",
@@ -17,4 +17,4 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["solps_ai*"]
+include = ["solpex*"]

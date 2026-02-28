@@ -1,3 +1,8 @@
+# Copyright 2025-2026 Oak Ridge National Laboratory
+# @authors: Abdourahmane (Abdou) Diaw - diawa@ornl.gov
+#
+# SPDX-License-Identifier: MIT
+
 import argparse
 import csv
 import os
@@ -7,8 +12,8 @@ import numpy as np
 import torch
 from scipy.stats import spearmanr
 
-from solps_ai.predict import load_checkpoint
-from solps_ai.utils import pick_device
+from solpex.predict import load_checkpoint
+from solpex.utils import pick_device
 
 POSITIVE_KEYS = {"Te", "Ti", "ne", "ni", "Sp"}
 
@@ -169,6 +174,9 @@ def main():
     ap.add_argument("--clip-scaled", type=float, default=4.0, help="Clamp recovered scaled params to [-v, v].")
     ap.add_argument("--log-eps", type=float, default=1e-12)
     ap.add_argument("--print-every", type=int, default=50)
+    ap.add_argument("--plot-fontsize", type=float, default=16.0, help="Font size for inverse correlation plot.")
+    ap.add_argument("--plot-tick-fontsize", type=float, default=13.0, help="Tick font size for inverse correlation plot.")
+    ap.add_argument("--plot-marker-size", type=float, default=34.0, help="Scatter marker size for inverse correlation plot.")
     args = ap.parse_args()
 
     os.makedirs(os.path.dirname(args.out_csv) or ".", exist_ok=True)
@@ -322,6 +330,14 @@ def main():
     nP = len(p_keys)
     ncols = min(3, nP)
     nrows = int(np.ceil(nP / ncols))
+    plt.rcParams.update(
+        {
+            "font.size": args.plot_fontsize,
+            "axes.labelsize": args.plot_fontsize,
+            "xtick.labelsize": args.plot_tick_fontsize,
+            "ytick.labelsize": args.plot_tick_fontsize,
+        }
+    )
     fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows), constrained_layout=True)
     axes = np.atleast_1d(axes).reshape(nrows, ncols)
     for k, name in enumerate(p_keys):
@@ -330,23 +346,25 @@ def main():
         ax = axes[r, c]
         t = np.array([row[f"{name}_true"] for row in rows], dtype=float)
         p = np.array([row[f"{name}_rec"] for row in rows], dtype=float)
-        ax.scatter(t, p, s=18, alpha=0.85)
+        ax.scatter(t, p, s=args.plot_marker_size, alpha=0.85)
         lo = min(np.min(t), np.min(p))
         hi = max(np.max(t), np.max(p))
         if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
             ax.plot([lo, hi], [lo, hi], "k--", linewidth=1.0)
         pear = float(np.corrcoef(t, p)[0, 1]) if len(t) > 2 else np.nan
         spear = float(spearmanr(t, p).correlation) if len(t) > 2 else np.nan
-        ax.set_title(f"{name}\nPearson={pear:.3f}, Spearman={spear:.3f}")
-        ax.set_xlabel("True")
-        ax.set_ylabel("Recovered")
+        ax.set_xlabel(f"True {name}")
+        ax.set_ylabel(f"Recovered {name}")
+        ax.text(
+            0.03, 0.97, f"r={pear:.3f}\n$\\rho$={spear:.3f}",
+            transform=ax.transAxes, va="top", ha="left", fontsize=args.plot_tick_fontsize
+        )
         ax.grid(alpha=0.25)
     # hide empty subplots
     for k in range(nP, nrows * ncols):
         r = k // ncols
         c = k % ncols
         axes[r, c].axis("off")
-    fig.suptitle("Inverse Parameter Recovery: True vs Recovered")
     fig.savefig(args.out_plot, dpi=220, bbox_inches="tight")
     plt.close(fig)
 

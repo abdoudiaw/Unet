@@ -1,3 +1,8 @@
+# Copyright 2025-2026 Oak Ridge National Laboratory
+# @authors: Abdourahmane (Abdou) Diaw - diawa@ornl.gov
+#
+# SPDX-License-Identifier: MIT
+
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -27,10 +32,6 @@ def z_to_bottleneck(z: torch.Tensor, b_shape) -> torch.Tensor:
     B, C, h, w = b_shape
     return z.view(B, C, 1, 1).expand(B, C, h, w)
 
-
-import torch
-from torch import nn
-import torch.nn.functional as F
 
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, groups_gn=8):
@@ -74,8 +75,6 @@ class UNet(nn.Module):
 
         self.out  = nn.Conv2d(base, out_ch, 1)
 
-    # solps_ai/models.py (inside your UNetTransposed/UNet class)
-
     def encode(self, x):
         e1 = self.enc1(x)
         e2 = self.enc2(self.pool(e1))
@@ -102,7 +101,3 @@ class UNet(nn.Module):
     def decode_from_bottleneck(self, x, b_pred):
         _, skips = self.encode(x)
         return self.decode(b_pred, skips)
-
-    def bottleneck_to_z(b: torch.Tensor) -> torch.Tensor:
-        # b: (B,C,h,w) -> z: (B,C)
-        return torch.flatten(F.adaptive_avg_pool2d(b, 1), 1)

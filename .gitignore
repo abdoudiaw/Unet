@@ -7,3 +7,12 @@ __pycache__/
 # Optional but common for ML workflows
 .ipynb_checkpoints/
 
+# macOS
+.DS_Store
+
+# Large binary dataset at repo root
+/solps.npz
+
+# Script outputs (model checkpoints, plots, eval dirs)
+scripts/outputs/
+scripts/paper_eval_mesh_*/

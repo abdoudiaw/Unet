@@ -1,3 +1,8 @@
+# Copyright 2025-2026 Oak Ridge National Laboratory
+# @authors: Abdourahmane (Abdou) Diaw - diawa@ornl.gov
+#
+# SPDX-License-Identifier: MIT
+
 #!/usr/bin/env python3
 import argparse
 from pathlib import Path
@@ -108,7 +113,7 @@ def panel_b(ax):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Draw SOLARIS model architecture diagram.")
+    ap = argparse.ArgumentParser(description="Draw SOLPEx model architecture diagram.")
     ap.add_argument("--out", default="outputs/solaris_model_architecture.png", help="Output PNG path.")
     ap.add_argument("--svg", action="store_true", help="Also save SVG.")
     ap.add_argument("--dpi", type=int, default=300, help="PNG DPI.")

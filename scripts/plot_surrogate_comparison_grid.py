@@ -1,3 +1,8 @@
+# Copyright 2025-2026 Oak Ridge National Laboratory
+# @authors: Abdourahmane (Abdou) Diaw - diawa@ornl.gov
+#
+# SPDX-License-Identifier: MIT
+
 import argparse
 import os
 
@@ -5,8 +10,8 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
 
-from solps_ai.predict import load_checkpoint, predict_fields, scale_params
-from solps_ai.utils import pick_device
+from solpex.predict import load_checkpoint, predict_fields, scale_params
+from solpex.utils import pick_device
 
 
 def load_npz_single(npz_path, y_key):
