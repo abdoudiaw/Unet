@@ -45,17 +45,23 @@ class DoubleConv(nn.Module):
             nn.GroupNorm(g, out_ch),
             nn.SiLU(inplace=True),
         )
+        self.shortcut = (
+            nn.Conv2d(in_ch, out_ch, 1, bias=False)
+            if in_ch != out_ch
+            else nn.Identity()
+        )
 
     def forward(self, x):
-        return self.net(x)
+        return self.net(x) + self.shortcut(x)
 
 class UNet(nn.Module):
     """
     UNet with ConvTranspose2d upsampling.
     Refactored into encode() and decode().
     """
-    def __init__(self, in_ch=1, out_ch=1, base=32, groups_gn=8):
+    def __init__(self, in_ch=1, out_ch=1, base=32, groups_gn=8, dropout=0.0):
         super().__init__()
+        self.dropout = dropout
         self.pool = nn.MaxPool2d(2)
 
         self.enc1 = DoubleConv(in_ch, base, groups_gn)
@@ -66,12 +72,15 @@ class UNet(nn.Module):
 
         self.up3  = nn.ConvTranspose2d(base*8, base*4, 2, 2)
         self.dec3 = DoubleConv(base*4 + base*4, base*4, groups_gn)
+        self.drop3 = nn.Dropout2d(dropout) if dropout > 0 else nn.Identity()
 
         self.up2  = nn.ConvTranspose2d(base*4, base*2, 2, 2)
         self.dec2 = DoubleConv(base*2 + base*2, base*2, groups_gn)
+        self.drop2 = nn.Dropout2d(dropout) if dropout > 0 else nn.Identity()
 
         self.up1  = nn.ConvTranspose2d(base*2, base, 2, 2)
         self.dec1 = DoubleConv(base + base, base, groups_gn)
+        self.drop1 = nn.Dropout2d(dropout) if dropout > 0 else nn.Identity()
 
         self.out  = nn.Conv2d(base, out_ch, 1)
 
@@ -85,11 +94,11 @@ class UNet(nn.Module):
     def decode(self, b, skips):
         e1, e2, e3 = skips
         u3 = self.up3(b)
-        d3 = self.dec3(torch.cat([u3, e3], dim=1))
+        d3 = self.drop3(self.dec3(torch.cat([u3, e3], dim=1)))
         u2 = self.up2(d3)
-        d2 = self.dec2(torch.cat([u2, e2], dim=1))
+        d2 = self.drop2(self.dec2(torch.cat([u2, e2], dim=1)))
         u1 = self.up1(d2)
-        d1 = self.dec1(torch.cat([u1, e1], dim=1))
+        d1 = self.drop1(self.dec1(torch.cat([u1, e1], dim=1)))
         return self.out(d1)
 
     def forward(self, x, return_bottleneck: bool = False):

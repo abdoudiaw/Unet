@@ -40,6 +40,7 @@ def train_unet(
     log_every: int = 1,                       # print every N epochs
     early_stop_patience: int | None = None,  # stop if no val improvement for N epochs
     early_stop_min_delta: float = 0.0,       # minimum val improvement to reset patience
+    weight_decay: float = 1e-4,              # AdamW weight decay
     lam_grad_warmup_start: int = 20,         # epoch to start ramping grad loss
     lam_grad_warmup_end: int = 60,           # epoch to reach full lam_grad
     channel_weights=None,                    # optional list/array shape (C,)
@@ -72,7 +73,7 @@ def train_unet(
             raise ValueError(f"channel_weights length={cw_arr.size} but out_ch={out_ch}")
         cw_t = torch.from_numpy(cw_arr).to(device)
 
-    opt = torch.optim.Adam(model.parameters(), lr=lr_init)
+    opt = torch.optim.AdamW(model.parameters(), lr=lr_init, weight_decay=weight_decay)
     # ---- ReduceLROnPlateau ----
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         opt,
@@ -261,8 +262,9 @@ def train_unet(
                         huber_beta=0.05,
                         grad_mode="vector",
                         grad_base=grad_base,
-                        multiscale=multiscale,     # try 0 first, then 1
+                        multiscale=multiscale,
                         ms_weight=ms_weight,
+                        grad_ds=2,                 # match training
                         channel_weights=cw_t,
                     )
 
@@ -271,20 +273,9 @@ def train_unet(
                 va_maeN_sum += float(mae_norm(p.float(), y.float(), m.float()).item()) * px
                 va_px       += px
 
-                # abs_sum, sq_sum, _ = batch_error_sums_ev(p.float(), y.float(), m.float(), norm)
-                # va_abs_ev_sum += float(abs_sum.item())
-                # va_sq_ev_sum  += float(sq_sum.item())
-
-
-
-                is_multi = hasattr(norm, "y_keys") and hasattr(norm, "norms")
-
-                # inside validation loop:
-                if not is_multi and lam_ev >= 0:   # only meaningful for single Te-like channel
-                    abs_sum, sq_sum, _ = batch_error_sums_ev(p.float(), y.float(), m.float(), norm)
-                    va_abs_ev_sum += float(abs_sum.item())
-                    va_sq_ev_sum  += float(sq_sum.item())
-
+                abs_sum, sq_sum, _ = batch_error_sums_ev(p.float(), y.float(), m.float(), norm)
+                va_abs_ev_sum += float(abs_sum.item())
+                va_sq_ev_sum  += float(sq_sum.item())
 
         va_loss    = va_loss_sum / max(va_px, 1.0)
         va_maeN    = va_maeN_sum / max(va_px, 1.0)
@@ -333,7 +324,7 @@ def train_unet(
                 "scaler": scaler.state_dict(),
                 "best_val": float(best_val),
                 "norm": _norm_to_ckpt(norm),
-                "in_ch": in_ch, "out_ch": out_ch, "base": base,
+                "in_ch": in_ch, "out_ch": out_ch, "base": base, "dropout": getattr(model, "dropout", 0.0),
                 "inputs_mode": inputs_mode,
                 "param_mu": mu,
                 "param_std": std,

@@ -66,9 +66,10 @@ def load_checkpoint(path, device):
     in_ch = ckpt.get("in_ch", 1)
     out_ch = ckpt.get("out_ch", 1)
     base  = ckpt.get("base", 2)  # fallback if missing
+    dropout = ckpt.get("dropout", 0.0)
 
-    model = UNet(in_ch=in_ch, out_ch=out_ch, base=base).to(device)
-    model.load_state_dict(ckpt["model"], strict=True)
+    model = UNet(in_ch=in_ch, out_ch=out_ch, base=base, dropout=dropout).to(device)
+    model.load_state_dict(ckpt["model"], strict=False)
 
     norm = _norm_from_ckpt(ckpt["norm"])
 

@@ -366,6 +366,7 @@ def main():
         c = k % ncols
         axes[r, c].axis("off")
     fig.savefig(args.out_plot, dpi=220, bbox_inches="tight")
+    plt.show()
     plt.close(fig)
 
     # Per-parameter correlation table
