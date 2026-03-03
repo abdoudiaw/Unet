@@ -163,9 +163,15 @@ def main():
     ap.add_argument("--split", type=float, default=0.85)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--n-cases", type=int, default=12)
-    ap.add_argument("--steps", type=int, default=300)
+    ap.add_argument("--steps", type=int, default=300,
+                    help="Optimization steps (use ~150 for lbfgs, ~1200 for adam).")
     ap.add_argument("--lr", type=float, default=5e-2)
-    ap.add_argument("--init", choices=["zero", "mean", "noisy_true"], default="mean")
+    ap.add_argument("--optimizer", choices=["adam", "lbfgs"], default="lbfgs",
+                    help="Optimizer for inverse parameter recovery.")
+    ap.add_argument("--init", choices=["zero", "mean", "noisy_true", "nn"], default="mean",
+                    help="Initialization strategy. 'nn' uses --inverse-ckpt for warm start.")
+    ap.add_argument("--inverse-ckpt", type=str, default=None,
+                    help="Path to trained inverse MLP checkpoint (for init=nn).")
     ap.add_argument("--noise-std", type=float, default=0.15, help="Used only for noisy_true init.")
     ap.add_argument("--fields", type=str, default="", help="Comma-separated field subset for inverse loss, e.g. Te,Ti,ne")
     ap.add_argument("--channel-weights", type=str, default="", help="Comma-separated name:weight, e.g. Te:1,Ti:1,ne:0.5,Sp:0.1")
@@ -192,6 +198,26 @@ def main():
     p_mu = np.asarray(p_mu, dtype=np.float32)
     p_std = np.asarray(p_std, dtype=np.float32)
 
+    # Load inverse MLP if requested
+    inv_mlp = None
+    inv_z_mu = inv_z_std = None
+    if args.inverse_ckpt is not None:
+        from solpex.latent import ZToParam
+        from solpex.models import bottleneck_to_z
+        inv_ckpt = torch.load(args.inverse_ckpt, map_location=device, weights_only=False)
+        z_dim = inv_ckpt["z_dim"]
+        P_dim = inv_ckpt["P"]
+        hidden = tuple(inv_ckpt.get("hidden", [128, 128]))
+        inv_mlp = ZToParam(z_dim=z_dim, P=P_dim, hidden=hidden).to(device)
+        inv_mlp.load_state_dict(inv_ckpt["model"])
+        inv_mlp.eval()
+        inv_z_mu = np.asarray(inv_ckpt["z_mu"], dtype=np.float32)
+        inv_z_std = np.asarray(inv_ckpt["z_std"], dtype=np.float32)
+        print(f"Loaded inverse MLP: z_dim={z_dim} -> P={P_dim}, hidden={hidden}")
+        if args.init != "nn":
+            print(f"  [note] --inverse-ckpt provided but --init={args.init}; "
+                  "set --init nn to use NN warm-start.")
+
     Y, M, P_raw, y_keys, p_keys = load_dataset(args.npz)
     field_idx, field_names = parse_fields_arg(args.fields, y_keys)
     cw_map = parse_channel_weights_arg(args.channel_weights, y_keys, default=1.0)
@@ -216,17 +242,37 @@ def main():
         y_true_norm = norm.transform(y_true_t, m_t)
         y_true_norm_sel = y_true_norm[:, field_idx]
 
-        if args.init == "zero":
-            p0 = np.zeros_like(p_true_scaled)
-        elif args.init == "mean":
-            p0 = np.zeros_like(p_true_scaled)  # mean of scaled params is ~0
-        else:
-            p0 = p_true_scaled + args.noise_std * rng.standard_normal(size=p_true_scaled.shape).astype(np.float32)
+        # NN warm-start: run forward encoder -> z -> inverse MLP -> p0
+        nn_p0 = None
+        if args.init == "nn":
+            if inv_mlp is None:
+                raise RuntimeError("--init nn requires --inverse-ckpt")
+            with torch.no_grad():
+                # Build input and run encoder
+                H, W = m_np.shape
+                mask_t = m_t  # (1,1,H,W)
+                p_zero = torch.zeros(1, len(p_true_scaled), device=device)
+                # Use true scaled params to build x (same as forward)
+                p_ch = torch.from_numpy(p_true_scaled).float().to(device).view(1, -1, 1, 1).expand(1, -1, H, W)
+                x_inp = torch.cat([mask_t, p_ch], dim=1)
+                # Actually, for the inverse we want z from the target fields, not params
+                # Encode the target fields through the norm -> model encoder
+                # Build x from y_true_norm (the normalized target)
+                _, b = model.encode(y_true_norm[:, :model.enc1.net[0].in_channels] if y_true_norm.shape[1] >= model.enc1.net[0].in_channels else y_true_norm)
+                z = bottleneck_to_z(b)  # (1, z_dim)
+                z_n = (z.cpu().numpy() - inv_z_mu) / inv_z_std
+                z_n = np.clip(z_n, -5.0, 5.0)
+                z_n_t = torch.from_numpy(z_n).float().to(device)
+                nn_p0 = inv_mlp(z_n_t).cpu().numpy()[0]  # (P,)
 
         best = None
         n_restarts = max(int(args.n_restarts), 1)
         for r in range(n_restarts):
-            if args.init == "zero":
+            if args.init == "nn":
+                p0r = nn_p0.copy()
+                if r > 0:
+                    p0r = p0r + args.noise_std * rng.standard_normal(size=p0r.shape).astype(np.float32)
+            elif args.init == "zero":
                 p0r = np.zeros_like(p_true_scaled)
             elif args.init == "mean":
                 p0r = np.zeros_like(p_true_scaled)
@@ -238,18 +284,53 @@ def main():
             p_var = torch.nn.Parameter(
                 torch.tensor(p0r[None, :], dtype=torch.float32, device=device)
             )  # (1,P), leaf parameter
-            opt = torch.optim.Adam([p_var], lr=args.lr)
+
+            use_lbfgs = (args.optimizer == "lbfgs")
+
+            if use_lbfgs:
+                opt = torch.optim.LBFGS(
+                    [p_var], lr=1.0, max_iter=20,
+                    line_search_fn="strong_wolfe",
+                )
+            else:
+                opt = torch.optim.Adam([p_var], lr=args.lr)
+                sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    opt, T_max=args.steps, eta_min=1e-5,
+                )
 
             for step in range(args.steps):
-                x = build_x_from_scaled_params(m_t, p_var)
-                y_pred_norm = model(x)
-                y_pred_norm_sel = y_pred_norm[:, field_idx]
-                loss_fit = weighted_masked_mse(y_pred_norm_sel, y_true_norm_sel, m_t, cw_sel)
-                loss_reg = args.reg * (p_var ** 2).mean()
-                loss = loss_fit + loss_reg
-                opt.zero_grad(set_to_none=True)
-                loss.backward()
-                opt.step()
+                if use_lbfgs:
+                    _loss_val = [None]
+                    _fit_val = [None]
+                    def closure():
+                        opt.zero_grad(set_to_none=True)
+                        x = build_x_from_scaled_params(m_t, p_var)
+                        y_pred_norm = model(x)
+                        y_pred_norm_sel = y_pred_norm[:, field_idx]
+                        loss_fit = weighted_masked_mse(y_pred_norm_sel, y_true_norm_sel, m_t, cw_sel)
+                        loss_reg = args.reg * (p_var ** 2).mean()
+                        loss = loss_fit + loss_reg
+                        loss.backward()
+                        _loss_val[0] = float(loss.item())
+                        _fit_val[0] = float(loss_fit.item())
+                        return loss
+                    opt.step(closure)
+                    loss_item = _loss_val[0]
+                    fit_item = _fit_val[0]
+                else:
+                    x = build_x_from_scaled_params(m_t, p_var)
+                    y_pred_norm = model(x)
+                    y_pred_norm_sel = y_pred_norm[:, field_idx]
+                    loss_fit = weighted_masked_mse(y_pred_norm_sel, y_true_norm_sel, m_t, cw_sel)
+                    loss_reg = args.reg * (p_var ** 2).mean()
+                    loss = loss_fit + loss_reg
+                    opt.zero_grad(set_to_none=True)
+                    loss.backward()
+                    opt.step()
+                    sched.step()
+                    loss_item = float(loss.item())
+                    fit_item = float(loss_fit.item())
+
                 if args.clip_scaled is not None and args.clip_scaled > 0:
                     with torch.no_grad():
                         p_var.clamp_(-float(args.clip_scaled), float(args.clip_scaled))
@@ -257,7 +338,7 @@ def main():
                 if (step % max(args.print_every, 1) == 0) or step == args.steps - 1:
                     print(
                         f"[case {case_i+1}/{n_cases} idx={int(gidx)} r={r+1}/{n_restarts}] "
-                        f"step {step:04d} loss={float(loss.item()):.4e} fit={float(loss_fit.item()):.4e}"
+                        f"step {step:04d} loss={loss_item:.4e} fit={fit_item:.4e}"
                     )
 
             with torch.no_grad():

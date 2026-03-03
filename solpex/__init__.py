@@ -9,5 +9,5 @@ from .losses import edge_weights, masked_weighted_loss, mae_norm, batch_error_su
 from .train import train_unet
 from .data import normalize_coords, load_geometry_h5
 from .utils import pick_device, sample_from_loader, eval_param2z_one, nearest_neighbor_in_Z
-from .latent import extract_z_dataset, ParamToZ, train_param2z
+from .latent import extract_z_dataset, ParamToZ, ZToParam, train_param2z, train_z2param
 from .plotting import plot_ae_recon_one

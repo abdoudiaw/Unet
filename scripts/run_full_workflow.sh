@@ -74,7 +74,7 @@ if [[ ! -f "${NPZ_PATH}" ]]; then
   exit 2
 fi
 
-echo "=== Step 1/5: Train params->(plasma+sources) conditional U-Net ==="
+echo "=== Step 1/6: Train params->(plasma+sources) conditional U-Net ==="
 MPLBACKEND=Agg \
 NPZ_PATH="${NPZ_PATH}" \
 Y_KEYS="${Y_KEYS_FWD}" \
@@ -85,7 +85,7 @@ EARLY_STOP_PATIENCE="${EARLY_STOP_PATIENCE_FWD}" \
 SWEEP_TRIALS="${SWEEP_TRIALS}" \
 python run_conditional_unet_pipeline.py
 
-echo "=== Step 2/5: Plot/evaluate params->(plasma+sources) model ==="
+echo "=== Step 2/6: Plot/evaluate params->(plasma+sources) model ==="
 MPLBACKEND=Agg python plot_paper_evaluation_mesh.py \
   --npz "${NPZ_PATH}" \
   --ckpt outputs/cond_unet.pt \
@@ -101,22 +101,34 @@ MPLBACKEND=Agg python plot_paper_evaluation_mesh.py \
   --log-metrics \
   --outdir outputs/paper_eval_mesh_all_abs
 
-echo "=== Step 3/5: Inverse + cycle evaluation (fields->params->fields) ==="
+echo "=== Step 3/6: Train inverse MLP (z->params) ==="
+INV_MLP_EPOCHS="$(default_if_empty "${INV_MLP_EPOCHS:-}" "400")"
+INV_MLP_HIDDEN="$(default_if_empty "${INV_MLP_HIDDEN:-}" "128,128")"
+python train_inverse_mlp.py \
+  --npz "${NPZ_PATH}" \
+  --ckpt outputs/cond_unet.pt \
+  --out outputs/inverse_mlp.pt \
+  --epochs "${INV_MLP_EPOCHS}" \
+  --hidden "${INV_MLP_HIDDEN}"
+
+echo "=== Step 4/6: Inverse + cycle evaluation (fields->params->fields) ==="
 MPLBACKEND=Agg python eval_inverse_cycle_conditional_unet.py \
   --npz "${NPZ_PATH}" \
   --ckpt outputs/cond_unet.pt \
+  --inverse-ckpt outputs/inverse_mlp.pt \
+  --optimizer lbfgs \
   --n-cases "${INV_N_CASES}" \
   --steps "${INV_STEPS}" \
   --lr "${INV_LR}" \
   --n-restarts "${INV_N_RESTARTS}" \
-  --init "${INV_INIT}" \
+  --init nn \
   --noise-std "${INV_NOISE_STD}" \
   --fields "${INV_FIELDS}" \
   --out-csv outputs/inverse_cycle_metrics.csv \
   --out-plot outputs/inverse_param_correlation.png \
   --out-param-corr-csv outputs/inverse_param_correlation.csv
 
-echo "=== Step 4/5: Train plasma->sources model (Te/Ti/ne/ni/ua -> Qp/Sp/Qe/Qi/Sm) ==="
+echo "=== Step 5/6: Train plasma->sources model (Te/Ti/ne/ni/ua -> Qp/Sp/Qe/Qi/Sm) ==="
 MPLBACKEND=Agg \
 NPZ_PATH="${NPZ_PATH}" \
 IN_KEYS="${SRC_IN_KEYS}" \
@@ -129,7 +141,7 @@ LR="${SRC_LR}" \
 BATCH_SIZE="${SRC_BATCH}" \
 python run_source_from_plasma_pipeline.py
 
-echo "=== Step 5/5: Plot/evaluate plasma->sources model ==="
+echo "=== Step 6/6: Plot/evaluate plasma->sources model ==="
 MPLBACKEND=Agg python eval_source_from_plasma_mesh.py \
   --npz "${NPZ_PATH}" \
   --ckpt outputs/source_from_plasma.pt \
@@ -145,6 +157,7 @@ echo "=== Workflow complete ==="
 echo "Key outputs:"
 echo "  outputs/cond_unet.pt"
 echo "  outputs/paper_eval_mesh_all_abs/"
+echo "  outputs/inverse_mlp.pt"
 echo "  outputs/inverse_cycle_metrics.csv"
 echo "  outputs/inverse_param_correlation.png"
 echo "  outputs/inverse_param_correlation.csv"

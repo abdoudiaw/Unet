@@ -26,6 +26,24 @@ class ParamToZ(nn.Module):
 
     def forward(self, p):
         return self.net(p)
+class ZToParam(nn.Module):
+    """Amortized inverse: maps latent z -> control parameters."""
+    def __init__(self, z_dim, P, hidden=(256, 256), dropout=0.0):
+        super().__init__()
+        layers = []
+        d = z_dim
+        for h in hidden:
+            layers += [nn.Linear(d, h), nn.SiLU()]
+            if dropout > 0:
+                layers += [nn.Dropout(dropout)]
+            d = h
+        layers += [nn.Linear(d, P)]
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, z):
+        return self.net(z)
+
+
 def train_param2z(
     *,
     P_train, Z_train,
@@ -98,10 +116,84 @@ def train_param2z(
 
     return model, hist
 
-import numpy as np
-import torch
-from torch.utils.data import DataLoader
-from .models import bottleneck_to_z
+
+def train_z2param(
+    *,
+    Z_train, P_train,
+    Z_val, P_val,
+    model,
+    device,
+    lr=1e-3,
+    epochs=200,
+    batch_size=256,
+    wd=1e-4,
+    num_workers=0,
+    save_path=None,
+):
+    """Train ZToParam inverse MLP: latent z -> scaled params."""
+    device = torch.device(device)
+    model = model.to(device)
+
+    tr_ds = TensorDataset(torch.from_numpy(Z_train), torch.from_numpy(P_train))
+    va_ds = TensorDataset(torch.from_numpy(Z_val), torch.from_numpy(P_val))
+
+    tr = DataLoader(tr_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+    va = DataLoader(va_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+
+    opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
+    loss_fn = torch.nn.SmoothL1Loss(beta=0.05)
+
+    best = float("inf")
+    hist = {"tr": [], "va": []}
+
+    for ep in range(epochs):
+        model.train()
+        tr_sum = 0.0
+        n = 0
+        for z, p in tr:
+            z = z.to(device)
+            p = p.to(device)
+            pred = model(z)
+            loss = loss_fn(pred, p)
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            opt.step()
+            tr_sum += float(loss.item()) * z.shape[0]
+            n += z.shape[0]
+        tr_loss = tr_sum / max(n, 1)
+
+        model.eval()
+        va_sum = 0.0
+        n = 0
+        with torch.no_grad():
+            for z, p in va:
+                z = z.to(device)
+                p = p.to(device)
+                pred = model(z)
+                loss = loss_fn(pred, p)
+                va_sum += float(loss.item()) * z.shape[0]
+                n += z.shape[0]
+        va_loss = va_sum / max(n, 1)
+
+        hist["tr"].append(tr_loss)
+        hist["va"].append(va_loss)
+
+        if (ep % 10) == 0 or ep == epochs - 1:
+            print(f"[z2param] ep {ep:04d} tr {tr_loss:.5f} va {va_loss:.5f}")
+
+        if va_loss < best:
+            best = va_loss
+            if save_path:
+                torch.save({
+                    "model": model.state_dict(),
+                    "best": best,
+                    "z_dim": Z_train.shape[1],
+                    "P": P_train.shape[1],
+                }, save_path)
+
+    return model, hist
+
 
 @torch.no_grad()
 def extract_z_dataset(
