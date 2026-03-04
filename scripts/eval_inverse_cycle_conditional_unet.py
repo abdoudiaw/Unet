@@ -254,7 +254,7 @@ def main():
                 # Encode target fields to get bottleneck z for NN warm-start
                 p_true_t = torch.from_numpy(p_true_scaled).float().unsqueeze(0).to(device)
                 x_enc = build_x_from_mask(m_t)
-                _, b = model.encode(x_enc, params=p_true_t)
+                b, _ = model.encode(x_enc, params=p_true_t)
                 z = bottleneck_to_z(b)  # (1, base*8)
                 if hasattr(model, 'z_proj') and model.z_proj is not None:
                     z = model.z_proj(z)
