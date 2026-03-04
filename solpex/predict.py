@@ -73,7 +73,11 @@ def load_checkpoint(path, device):
 
     model = UNet(in_ch=in_ch, out_ch=out_ch, base=base, dropout=dropout,
                  P=P, film_hidden=film_hidden, z_dim=z_dim).to(device)
-    model.load_state_dict(ckpt["model"], strict=False)
+    missing, unexpected = model.load_state_dict(ckpt["model"], strict=False)
+    if missing:
+        print(f"[load_checkpoint] WARNING: missing keys: {missing}")
+    if unexpected:
+        print(f"[load_checkpoint] WARNING: unexpected keys: {unexpected}")
 
     norm = _norm_from_ckpt(ckpt["norm"])
 

@@ -194,6 +194,20 @@ def main():
         raise RuntimeError("Checkpoint missing param scaler (param_mu/param_std).")
     p_mu = np.asarray(p_mu, dtype=np.float32)
     p_std = np.asarray(p_std, dtype=np.float32)
+    print(f"Forward model: P={model.P}, z_dim={getattr(model, 'z_dim', 0)}, "
+          f"has_film={hasattr(model, 'film_enc1')}")
+
+    # Quick gradient sanity check: does the model output depend on params?
+    if model.P > 0:
+        _m0 = torch.ones(1, 1, 8, 8, device=device)
+        _p0 = torch.randn(1, model.P, device=device, requires_grad=True)
+        _y0 = model(_m0, params=_p0)
+        _loss0 = _y0.sum()
+        _loss0.backward()
+        _gnorm = _p0.grad.norm().item() if _p0.grad is not None else 0.0
+        print(f"[diag] param grad norm = {_gnorm:.6e} (should be >> 0)")
+        model.zero_grad()
+        del _m0, _p0, _y0, _loss0
 
     # Load inverse MLP if requested
     inv_mlp = None
