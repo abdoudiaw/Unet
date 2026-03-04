@@ -186,13 +186,16 @@ def run(smoke_test=False):
     sweep_enabled = (os.environ.get("SWEEP", "0" if smoke_test else "1") == "1")
     early_stop_patience = _env_int("EARLY_STOP_PATIENCE", 3 if smoke_test else 8)
     early_stop_min_delta = _env_float("EARLY_STOP_MIN_DELTA", 1e-4)
+    z_dim = _env_int("Z_DIM", 0)
+    lam_grad = _env_float("LAM_GRAD", 0.1)
+    lam_grad_warmup_end = _env_int("LAM_GRAD_WARMUP_END", 60)
     split = 0.85
     channel_weights_env = os.environ.get("CHANNEL_WEIGHTS", "")
     channel_weights, channel_weights_map = _parse_channel_weights(channel_weights_env, y_keys)
     print(
         f"cfg: epochs={epochs} batch={batch_size} base={base} lr={lr:.2e} "
         f"sweep={sweep_enabled} early_stop_patience={early_stop_patience} y_keys={y_keys} "
-        f"sweep_preset={os.environ.get('SWEEP_PRESET', 'strong3')}"
+        f"z_dim={z_dim} sweep_preset={os.environ.get('SWEEP_PRESET', 'strong3')}"
     )
     print(f"channel_weights={channel_weights_map}")
 
@@ -227,7 +230,8 @@ def run(smoke_test=False):
             epochs=epochs,
             base=t_base,
             amp=False,
-            lam_grad=0.1,
+            lam_grad=lam_grad,
+            lam_grad_warmup_end=lam_grad_warmup_end,
             lam_w=0.5,
             multiscale=0,
             grad_accum_steps=1,
@@ -238,6 +242,7 @@ def run(smoke_test=False):
             early_stop_min_delta=early_stop_min_delta,
             channel_weights=channel_weights,
             P=Pdim,
+            z_dim=z_dim,
         )
         best_val = float(np.min(np.asarray(hist.get("va_mse", [np.inf]), dtype=float)))
         print(f"[trial {tag}] best_val_mse={best_val:.6g} ckpt={trial_ckpt}")

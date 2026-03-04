@@ -34,6 +34,13 @@ SWEEP_TRIALS="$(default_if_empty "${SWEEP_TRIALS:-}" "base=32,lr=3e-4,batch=4; b
 EPOCHS_FWD="$(default_if_empty "${EPOCHS_FWD:-}" "450")"
 EARLY_STOP_PATIENCE_FWD="$(default_if_empty "${EARLY_STOP_PATIENCE_FWD:-}" "80")"
 
+# Latent projection & cycle consistency
+Z_DIM="$(default_if_empty "${Z_DIM:-}" "64")"
+CYCLE_INVERSE="$(default_if_empty "${CYCLE_INVERSE:-}" "true")"
+LAM_CYCLE="$(default_if_empty "${LAM_CYCLE:-}" "0.1")"
+LAM_GRAD="$(default_if_empty "${LAM_GRAD:-}" "0.1")"
+LAM_GRAD_WARMUP_END="$(default_if_empty "${LAM_GRAD_WARMUP_END:-}" "80")"
+
 # Step 3: inverse/cycle
 INV_N_CASES="$(default_if_empty "${INV_N_CASES:-}" "40")"
 INV_STEPS="$(default_if_empty "${INV_STEPS:-}" "1200")"
@@ -69,6 +76,8 @@ echo "EPOCHS_FWD=${EPOCHS_FWD} EARLY_STOP_PATIENCE_FWD=${EARLY_STOP_PATIENCE_FWD
 echo "INV_N_CASES=${INV_N_CASES} INV_STEPS=${INV_STEPS}"
 echo "INV_LR=${INV_LR} INV_N_RESTARTS=${INV_N_RESTARTS} INV_INIT=${INV_INIT} INV_NOISE_STD=${INV_NOISE_STD}"
 echo "INV_FIELDS=${INV_FIELDS}"
+echo "Z_DIM=${Z_DIM} CYCLE_INVERSE=${CYCLE_INVERSE} LAM_CYCLE=${LAM_CYCLE}"
+echo "LAM_GRAD=${LAM_GRAD} LAM_GRAD_WARMUP_END=${LAM_GRAD_WARMUP_END}"
 echo "SRC_IN_KEYS=${SRC_IN_KEYS}"
 echo "SRC_OUT_KEYS=${SRC_OUT_KEYS}"
 echo "SRC_INCLUDE_PARAMS=${SRC_INCLUDE_PARAMS}"
@@ -89,6 +98,7 @@ SWEEP=1 \
 EPOCHS="${EPOCHS_FWD}" \
 EARLY_STOP_PATIENCE="${EARLY_STOP_PATIENCE_FWD}" \
 SWEEP_TRIALS="${SWEEP_TRIALS}" \
+Z_DIM="${Z_DIM}" \
 python run_conditional_unet_pipeline.py
 
 echo "=== Step 2/7: Plot/evaluate params->(plasma+sources) model ==="
@@ -110,12 +120,17 @@ MPLBACKEND=Agg python plot_paper_evaluation_mesh.py \
 echo "=== Step 3/7: Train inverse MLP (z->params) ==="
 INV_MLP_EPOCHS="$(default_if_empty "${INV_MLP_EPOCHS:-}" "400")"
 INV_MLP_HIDDEN="$(default_if_empty "${INV_MLP_HIDDEN:-}" "128,128")"
+INV_CYCLE_FLAGS=""
+if [[ "${CYCLE_INVERSE}" == "true" ]]; then
+  INV_CYCLE_FLAGS="--cycle --lam-cycle ${LAM_CYCLE} --use-layernorm"
+fi
 python train_inverse_mlp.py \
   --npz "${NPZ_PATH}" \
   --ckpt outputs/cond_unet.pt \
   --out outputs/inverse_mlp.pt \
   --epochs "${INV_MLP_EPOCHS}" \
-  --hidden "${INV_MLP_HIDDEN}"
+  --hidden "${INV_MLP_HIDDEN}" \
+  ${INV_CYCLE_FLAGS}
 
 echo "=== Step 4/7: Inverse + cycle evaluation (NN-warm-started L-BFGS) ==="
 MPLBACKEND=Agg python eval_inverse_cycle_conditional_unet.py \

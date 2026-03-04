@@ -12,12 +12,14 @@ def bottleneck_to_z(b: torch.Tensor) -> torch.Tensor:
     return torch.flatten(F.adaptive_avg_pool2d(b, 1), 1)
 
 class ParamToZ(nn.Module):
-    def __init__(self, P: int, z_dim: int, hidden=(256,256), dropout=0.0):
+    def __init__(self, P: int, z_dim: int, hidden=(256,256), dropout=0.0, use_layernorm=False):
         super().__init__()
         layers = []
         in_d = P
         for h in hidden:
             layers += [nn.Linear(in_d, h), nn.SiLU()]
+            if use_layernorm:
+                layers += [nn.LayerNorm(h)]
             if dropout and dropout > 0:
                 layers += [nn.Dropout(dropout)]
             in_d = h
@@ -86,10 +88,11 @@ class UNet(nn.Module):
     When P == 0, behaves identically to the original architecture.
     """
     def __init__(self, in_ch=1, out_ch=1, base=32, groups_gn=8, dropout=0.0,
-                 P: int = 0, film_hidden: int = 128):
+                 P: int = 0, film_hidden: int = 128, z_dim: int = 0):
         super().__init__()
         self.dropout = dropout
         self.P = P
+        self.z_dim = z_dim
         self.pool = nn.MaxPool2d(2)
 
         self.enc1 = DoubleConv(in_ch, base, groups_gn)
@@ -122,11 +125,34 @@ class UNet(nn.Module):
             self.film_dec2 = FiLMGenerator(P, base*2, film_hidden)
             self.film_dec1 = FiLMGenerator(P, base, film_hidden)
 
+        # Learned latent projection (only when z_dim > 0)
+        if z_dim > 0:
+            self.z_proj = nn.Linear(base * 8, z_dim)
+            self.z_unproj = nn.Linear(z_dim, base * 8)
+        else:
+            self.z_proj = None
+            self.z_unproj = None
+
     @staticmethod
     def _apply_film(features, film_layer, params):
         """Apply FiLM modulation: features * gamma + beta."""
         gamma, beta = film_layer(params)
         return features * gamma + beta
+
+    def project_z(self, b):
+        """Bottleneck -> compressed latent: (B,C,h,w) -> (B, z_dim)."""
+        z = bottleneck_to_z(b)  # (B, base*8)
+        if self.z_proj is not None:
+            z = self.z_proj(z)
+        return z
+
+    def unproject_z(self, z_low, b_shape):
+        """Compressed latent -> bottleneck: (B, z_dim) -> (B,C,h,w)."""
+        if self.z_unproj is not None:
+            z_full = self.z_unproj(z_low)
+        else:
+            z_full = z_low
+        return z_to_bottleneck(z_full, b_shape)
 
     def encode(self, x, params=None):
         e1 = self.enc1(x)

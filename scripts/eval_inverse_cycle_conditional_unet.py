@@ -205,12 +205,18 @@ def main():
         z_dim = inv_ckpt["z_dim"]
         P_dim = inv_ckpt["P"]
         hidden = tuple(inv_ckpt.get("hidden", [128, 128]))
-        inv_mlp = ZToParam(z_dim=z_dim, P=P_dim, hidden=hidden).to(device)
-        inv_mlp.load_state_dict(inv_ckpt["model"])
+        use_ln = inv_ckpt.get("use_layernorm", False)
+        inv_mlp = ZToParam(z_dim=z_dim, P=P_dim, hidden=hidden, use_layernorm=use_ln).to(device)
+        # Cycle-trained checkpoints store z2p under "z2p_model"; legacy uses "model"
+        if "z2p_model" in inv_ckpt:
+            inv_mlp.load_state_dict(inv_ckpt["z2p_model"])
+            print(f"Loaded cycle-trained inverse MLP: z_dim={z_dim} -> P={P_dim}, hidden={hidden}, layernorm={use_ln}")
+        else:
+            inv_mlp.load_state_dict(inv_ckpt["model"])
+            print(f"Loaded inverse MLP: z_dim={z_dim} -> P={P_dim}, hidden={hidden}, layernorm={use_ln}")
         inv_mlp.eval()
         inv_z_mu = np.asarray(inv_ckpt["z_mu"], dtype=np.float32)
         inv_z_std = np.asarray(inv_ckpt["z_std"], dtype=np.float32)
-        print(f"Loaded inverse MLP: z_dim={z_dim} -> P={P_dim}, hidden={hidden}")
         if args.init != "nn":
             print(f"  [note] --inverse-ckpt provided but --init={args.init}; "
                   "set --init nn to use NN warm-start.")
@@ -249,7 +255,9 @@ def main():
                 p_true_t = torch.from_numpy(p_true_scaled).float().unsqueeze(0).to(device)
                 x_enc = build_x_from_mask(m_t)
                 _, b = model.encode(x_enc, params=p_true_t)
-                z = bottleneck_to_z(b)  # (1, z_dim)
+                z = bottleneck_to_z(b)  # (1, base*8)
+                if hasattr(model, 'z_proj') and model.z_proj is not None:
+                    z = model.z_proj(z)
                 z_n = (z.cpu().numpy() - inv_z_mu) / inv_z_std
                 z_n = np.clip(z_n, -5.0, 5.0)
                 z_n_t = torch.from_numpy(z_n).float().to(device)

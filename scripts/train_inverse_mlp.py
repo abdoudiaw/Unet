@@ -28,7 +28,7 @@ import torch
 
 from solpex.predict import load_checkpoint
 from solpex.models import bottleneck_to_z
-from solpex.latent import ZToParam, train_z2param
+from solpex.latent import ZToParam, ParamToZ, train_z2param, train_cycle_consistent
 from solpex.utils import pick_device
 
 
@@ -57,7 +57,9 @@ def extract_z_from_forward(model, Y, M, P_raw, p_mu, p_std, device, batch_size=1
         p_t = torch.from_numpy(p_scaled).float().to(device)  # (B,P)
 
         b, _ = model.encode(mask_b, params=p_t)  # bottleneck
-        z = bottleneck_to_z(b)  # (B, z_dim)
+        z = bottleneck_to_z(b)  # (B, base*8)
+        if hasattr(model, 'z_proj') and model.z_proj is not None:
+            z = model.z_proj(z)
         Zs.append(z.cpu().numpy())
 
     Z = np.concatenate(Zs, axis=0).astype(np.float32)
@@ -77,6 +79,12 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--hidden", type=str, default="128,128",
                     help="Comma-separated hidden layer sizes")
+    ap.add_argument("--cycle", action="store_true",
+                    help="Enable cycle consistency training (joint p2z + z2p)")
+    ap.add_argument("--lam-cycle", type=float, default=0.1,
+                    help="Weight for cycle consistency losses")
+    ap.add_argument("--use-layernorm", action="store_true",
+                    help="Add LayerNorm to MLP hidden layers")
     args = ap.parse_args()
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
@@ -137,33 +145,70 @@ def main():
     Z_tr_n = np.clip((Z_tr - z_mu) / z_std, -5.0, 5.0)
     Z_va_n = np.clip((Z_va - z_mu) / z_std, -5.0, 5.0)
 
-    # Build and train inverse MLP
+    # Build and train inverse MLP(s)
     hidden = tuple(int(x) for x in args.hidden.split(","))
-    print(f"Training ZToParam: z_dim={z_dim} -> hidden={hidden} -> P={P_dim}")
-    inv_mlp = ZToParam(z_dim=z_dim, P=P_dim, hidden=hidden).to(device)
+    use_ln = args.use_layernorm
 
-    inv_mlp, hist = train_z2param(
-        Z_train=Z_tr_n, P_train=P_tr,
-        Z_val=Z_va_n, P_val=P_va,
-        model=inv_mlp,
-        device=device,
-        lr=args.lr,
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        save_path=args.out,
-    )
+    if args.cycle:
+        print(f"Training cycle-consistent: z_dim={z_dim} <-> P={P_dim}, "
+              f"hidden={hidden}, lam_cycle={args.lam_cycle}, layernorm={use_ln}")
+        z2p = ZToParam(z_dim=z_dim, P=P_dim, hidden=hidden, use_layernorm=use_ln).to(device)
+        p2z = ParamToZ(P=P_dim, latent_dim=z_dim, hidden=hidden, use_layernorm=use_ln).to(device)
 
-    # Save extra metadata into checkpoint
-    ckpt = torch.load(args.out, map_location="cpu", weights_only=False)
-    ckpt.update({
-        "z_mu": z_mu, "z_std": z_std,
-        "p_mu": p_mu, "p_std": p_std,
-        "p_keys": p_keys,
-        "hidden": list(hidden),
-        "forward_ckpt": args.ckpt,
-    })
-    torch.save(ckpt, args.out)
-    print(f"Saved inverse MLP to {args.out}")
+        p2z, z2p, hist = train_cycle_consistent(
+            Z_train=Z_tr_n, P_train=P_tr,
+            Z_val=Z_va_n, P_val=P_va,
+            p2z_model=p2z, z2p_model=z2p,
+            device=device,
+            lr=args.lr,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            lam_cycle=args.lam_cycle,
+            save_path=args.out,
+        )
+
+        # Save extra metadata into checkpoint
+        ckpt = torch.load(args.out, map_location="cpu", weights_only=False)
+        ckpt.update({
+            "z_mu": z_mu, "z_std": z_std,
+            "p_mu": p_mu, "p_std": p_std,
+            "p_keys": p_keys,
+            "hidden": list(hidden),
+            "forward_ckpt": args.ckpt,
+            "use_layernorm": use_ln,
+            "cycle": True,
+            "lam_cycle": args.lam_cycle,
+        })
+        torch.save(ckpt, args.out)
+        print(f"Saved cycle-consistent inverse checkpoint to {args.out}")
+        inv_mlp = z2p  # for eval below
+    else:
+        print(f"Training ZToParam: z_dim={z_dim} -> hidden={hidden} -> P={P_dim}, layernorm={use_ln}")
+        inv_mlp = ZToParam(z_dim=z_dim, P=P_dim, hidden=hidden, use_layernorm=use_ln).to(device)
+
+        inv_mlp, hist = train_z2param(
+            Z_train=Z_tr_n, P_train=P_tr,
+            Z_val=Z_va_n, P_val=P_va,
+            model=inv_mlp,
+            device=device,
+            lr=args.lr,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            save_path=args.out,
+        )
+
+        # Save extra metadata into checkpoint
+        ckpt = torch.load(args.out, map_location="cpu", weights_only=False)
+        ckpt.update({
+            "z_mu": z_mu, "z_std": z_std,
+            "p_mu": p_mu, "p_std": p_std,
+            "p_keys": p_keys,
+            "hidden": list(hidden),
+            "forward_ckpt": args.ckpt,
+            "use_layernorm": use_ln,
+        })
+        torch.save(ckpt, args.out)
+        print(f"Saved inverse MLP to {args.out}")
 
     # Quick eval
     inv_mlp.eval()

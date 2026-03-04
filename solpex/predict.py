@@ -69,9 +69,10 @@ def load_checkpoint(path, device):
     dropout = ckpt.get("dropout", 0.0)
     P = ckpt.get("P", 0)
     film_hidden = ckpt.get("film_hidden", 128)
+    z_dim = ckpt.get("z_dim", 0)
 
     model = UNet(in_ch=in_ch, out_ch=out_ch, base=base, dropout=dropout,
-                 P=P, film_hidden=film_hidden).to(device)
+                 P=P, film_hidden=film_hidden, z_dim=z_dim).to(device)
     model.load_state_dict(ckpt["model"], strict=False)
 
     norm = _norm_from_ckpt(ckpt["norm"])
