@@ -14,5 +14,5 @@ __pycache__/
 /solps.npz
 
 # Script outputs (model checkpoints, plots, eval dirs)
-scripts/outputs/
-scripts/paper_eval_mesh_*/
+#scripts/outputs/
+#scripts/paper_eval_mesh_*/

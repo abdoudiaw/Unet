@@ -1,0 +1,24 @@
+{
+  "npz_path": "/content/drive/MyDrive/scripts/data/solps.npz",
+  "input_keys": [
+    "Te",
+    "Ti",
+    "ne",
+    "ni",
+    "ua"
+  ],
+  "output_keys": [
+    "Sp",
+    "Qe",
+    "Qi",
+    "Sm"
+  ],
+  "include_params": true,
+  "split": 0.85,
+  "seed": 42,
+  "epochs": 200,
+  "batch_size": 4,
+  "base": 32,
+  "lr": 0.0003,
+  "best_val_mse_norm": 0.2630263958891777
+}
