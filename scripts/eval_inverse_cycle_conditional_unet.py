@@ -247,6 +247,8 @@ def main():
     rng = np.random.default_rng(args.seed)
     picks = rng.choice(val_idx, size=n_cases, replace=False)
 
+    model.eval()  # critical: disable dropout for deterministic L-BFGS closure
+
     rows = []
     for case_i, gidx in enumerate(picks):
         y_true_np = Y[gidx]             # (C,H,W) physical
