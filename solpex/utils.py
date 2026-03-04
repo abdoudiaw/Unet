@@ -67,8 +67,9 @@ def eval_param2z_one(
         p_raw = (p_raw - np.asarray(p_mu, dtype=np.float32)) / np.asarray(p_std, dtype=np.float32)
     p = torch.from_numpy(p_raw).unsqueeze(0).to(device)
 
-    # true latent
-    _, b = ae(x, return_bottleneck=True)
+    # true latent (pass params for FiLM conditioning)
+    params_t = sample["params"].unsqueeze(0).to(device) if "params" in sample else None
+    _, b = ae(x, params=params_t, return_bottleneck=True)
     z_true = bottleneck_to_z(b)  # (1, zdim)
 
     # predicted latent (maybe normalized)

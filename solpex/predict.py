@@ -67,8 +67,11 @@ def load_checkpoint(path, device):
     out_ch = ckpt.get("out_ch", 1)
     base  = ckpt.get("base", 2)  # fallback if missing
     dropout = ckpt.get("dropout", 0.0)
+    P = ckpt.get("P", 0)
+    film_hidden = ckpt.get("film_hidden", 128)
 
-    model = UNet(in_ch=in_ch, out_ch=out_ch, base=base, dropout=dropout).to(device)
+    model = UNet(in_ch=in_ch, out_ch=out_ch, base=base, dropout=dropout,
+                 P=P, film_hidden=film_hidden).to(device)
     model.load_state_dict(ckpt["model"], strict=False)
 
     norm = _norm_from_ckpt(ckpt["norm"])
@@ -105,12 +108,11 @@ def predict_fields(model, norm, mask, params, Rn=None, Zn=None, device=None, as_
             raise ValueError(f"Rn/Zn shape mismatch: got {Rch.shape[-2:]},{Zch.shape[-2:]}, expected {(H,W)}")
         channels += [Rch, Zch]
 
-    # params channels -> (1,P,H,W)
+    # params tensor for FiLM conditioning (passed separately, not concatenated)
+    p_tensor = None
     if params is not None:
         params = np.asarray(params, dtype=np.float32).ravel()
-        P = int(params.shape[0])
-        p = torch.from_numpy(params).view(1, P, 1, 1).expand(1, P, H, W).to(device)
-        channels.append(p)
+        p_tensor = torch.from_numpy(params).unsqueeze(0).to(device)  # (1, P)
 
     x = torch.cat(channels, dim=1)  # (1,C,H,W)
 
@@ -118,7 +120,7 @@ def predict_fields(model, norm, mask, params, Rn=None, Zn=None, device=None, as_
         raise RuntimeError(f"Model expects in_ch={expected_in}, but you built C={x.shape[1]}.")
 
     with torch.no_grad():
-        z = model(x)
+        z = model(x, params=p_tensor)
         y = norm.inverse(z, m)
 
     if as_numpy:

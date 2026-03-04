@@ -51,15 +51,12 @@ def extract_z_from_forward(model, Y, M, P_raw, p_mu, p_std, device, batch_size=1
     for i in range(0, N, batch_size):
         j = min(i + batch_size, N)
 
-        # Build input x: mask (1ch) + scaled params (Pch) broadcast
+        # Build input x: mask only (params passed via FiLM)
         mask_b = torch.from_numpy(M[i:j]).float().unsqueeze(1).to(device)  # (B,1,H,W)
         p_scaled = (P_raw[i:j] - p_mu) / p_std
         p_t = torch.from_numpy(p_scaled).float().to(device)  # (B,P)
-        B, P = p_t.shape
-        p_ch = p_t.view(B, P, 1, 1).expand(B, P, H, W)
-        x = torch.cat([mask_b, p_ch], dim=1)  # (B, 1+P, H, W)
 
-        _, b = model.encode(x)  # bottleneck
+        _, b = model.encode(mask_b, params=p_t)  # bottleneck
         z = bottleneck_to_z(b)  # (B, z_dim)
         Zs.append(z.cpu().numpy())
 

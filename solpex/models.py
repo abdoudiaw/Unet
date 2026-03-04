@@ -33,6 +33,29 @@ def z_to_bottleneck(z: torch.Tensor, b_shape) -> torch.Tensor:
     return z.view(B, C, 1, 1).expand(B, C, h, w)
 
 
+class FiLMGenerator(nn.Module):
+    """Generate per-channel scale (gamma) and shift (beta) from scalar params."""
+    def __init__(self, P: int, n_channels: int, hidden: int = 128):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(P, hidden),
+            nn.SiLU(inplace=True),
+            nn.Linear(hidden, n_channels * 2),
+        )
+        # Initialize near-identity: gamma ≈ 1, beta ≈ 0
+        nn.init.zeros_(self.net[-1].weight)
+        nn.init.zeros_(self.net[-1].bias)
+        self.n_channels = n_channels
+
+    def forward(self, params):
+        """params: (B, P) -> gamma: (B, C, 1, 1), beta: (B, C, 1, 1)"""
+        out = self.net(params)  # (B, 2*C)
+        gamma, beta = out.split(self.n_channels, dim=1)
+        gamma = gamma.unsqueeze(-1).unsqueeze(-1)  # (B, C, 1, 1)
+        beta = beta.unsqueeze(-1).unsqueeze(-1)
+        return (1.0 + gamma), beta  # center gamma around 1
+
+
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, groups_gn=8):
         super().__init__()
@@ -56,12 +79,17 @@ class DoubleConv(nn.Module):
 
 class UNet(nn.Module):
     """
-    UNet with ConvTranspose2d upsampling.
-    Refactored into encode() and decode().
+    UNet with ConvTranspose2d upsampling and optional FiLM conditioning.
+
+    When P > 0, scalar control parameters are injected via FiLM (Feature-wise
+    Linear Modulation) at every encoder, bottleneck, and decoder level.
+    When P == 0, behaves identically to the original architecture.
     """
-    def __init__(self, in_ch=1, out_ch=1, base=32, groups_gn=8, dropout=0.0):
+    def __init__(self, in_ch=1, out_ch=1, base=32, groups_gn=8, dropout=0.0,
+                 P: int = 0, film_hidden: int = 128):
         super().__init__()
         self.dropout = dropout
+        self.P = P
         self.pool = nn.MaxPool2d(2)
 
         self.enc1 = DoubleConv(in_ch, base, groups_gn)
@@ -84,29 +112,59 @@ class UNet(nn.Module):
 
         self.out  = nn.Conv2d(base, out_ch, 1)
 
-    def encode(self, x):
+        # FiLM conditioning layers (only when P > 0)
+        if P > 0:
+            self.film_enc1 = FiLMGenerator(P, base, film_hidden)
+            self.film_enc2 = FiLMGenerator(P, base*2, film_hidden)
+            self.film_enc3 = FiLMGenerator(P, base*4, film_hidden)
+            self.film_bot  = FiLMGenerator(P, base*8, film_hidden)
+            self.film_dec3 = FiLMGenerator(P, base*4, film_hidden)
+            self.film_dec2 = FiLMGenerator(P, base*2, film_hidden)
+            self.film_dec1 = FiLMGenerator(P, base, film_hidden)
+
+    @staticmethod
+    def _apply_film(features, film_layer, params):
+        """Apply FiLM modulation: features * gamma + beta."""
+        gamma, beta = film_layer(params)
+        return features * gamma + beta
+
+    def encode(self, x, params=None):
         e1 = self.enc1(x)
+        if params is not None and self.P > 0:
+            e1 = self._apply_film(e1, self.film_enc1, params)
         e2 = self.enc2(self.pool(e1))
+        if params is not None and self.P > 0:
+            e2 = self._apply_film(e2, self.film_enc2, params)
         e3 = self.enc3(self.pool(e2))
+        if params is not None and self.P > 0:
+            e3 = self._apply_film(e3, self.film_enc3, params)
         b  = self.bot(self.pool(e3))
+        if params is not None and self.P > 0:
+            b = self._apply_film(b, self.film_bot, params)
         return b, (e1, e2, e3)
 
-    def decode(self, b, skips):
+    def decode(self, b, skips, params=None):
         e1, e2, e3 = skips
         u3 = self.up3(b)
         d3 = self.drop3(self.dec3(torch.cat([u3, e3], dim=1)))
+        if params is not None and self.P > 0:
+            d3 = self._apply_film(d3, self.film_dec3, params)
         u2 = self.up2(d3)
         d2 = self.drop2(self.dec2(torch.cat([u2, e2], dim=1)))
+        if params is not None and self.P > 0:
+            d2 = self._apply_film(d2, self.film_dec2, params)
         u1 = self.up1(d2)
         d1 = self.drop1(self.dec1(torch.cat([u1, e1], dim=1)))
+        if params is not None and self.P > 0:
+            d1 = self._apply_film(d1, self.film_dec1, params)
         return self.out(d1)
 
-    def forward(self, x, return_bottleneck: bool = False):
-        b, skips = self.encode(x)
-        y = self.decode(b, skips)
+    def forward(self, x, params=None, return_bottleneck: bool = False):
+        b, skips = self.encode(x, params=params)
+        y = self.decode(b, skips, params=params)
         return (y, b) if return_bottleneck else y
 
     # Convenience for surrogate test: decode with skips recomputed from x
-    def decode_from_bottleneck(self, x, b_pred):
-        _, skips = self.encode(x)
-        return self.decode(b_pred, skips)
+    def decode_from_bottleneck(self, x, b_pred, params=None):
+        _, skips = self.encode(x, params=params)
+        return self.decode(b_pred, skips, params=params)

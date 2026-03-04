@@ -129,7 +129,8 @@ def eval_one(model, norm, sample, device):
     x = sample["x"].unsqueeze(0).to(device)
     y = sample["y"].unsqueeze(0).to(device)
     m = sample["mask"].unsqueeze(0).to(device)
-    p = model(x)
+    params = sample["params"].unsqueeze(0).to(device) if "params" in sample else None
+    p = model(x, params=params)
     mse_n = masked_mse(p, y, m)
     mae_n = masked_mae(p, y, m)
 
@@ -213,7 +214,7 @@ def run(smoke_test=False):
         b0 = next(iter(train_loader))
         in_ch = b0["x"].shape[1]
         out_ch = b0["y"].shape[1]
-        print(f"[trial {tag}] in_ch={in_ch} out_ch={out_ch} Pdim={Pdim} H={H} W={W}")
+        print(f"[trial {tag}] in_ch={in_ch} out_ch={out_ch} Pdim={Pdim} (FiLM) H={H} W={W}")
         trial_ckpt = f"outputs/cond_unet_{tag}.pt"
         model, hist = train_unet(
             train_loader=train_loader,
@@ -236,6 +237,7 @@ def run(smoke_test=False):
             early_stop_patience=early_stop_patience,
             early_stop_min_delta=early_stop_min_delta,
             channel_weights=channel_weights,
+            P=Pdim,
         )
         best_val = float(np.min(np.asarray(hist.get("va_mse", [np.inf]), dtype=float)))
         print(f"[trial {tag}] best_val_mse={best_val:.6g} ckpt={trial_ckpt}")

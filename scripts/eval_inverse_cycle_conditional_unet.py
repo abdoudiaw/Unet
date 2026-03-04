@@ -60,12 +60,9 @@ def load_dataset(npz_path):
     return Y, M, P, y_keys, p_keys
 
 
-def build_x_from_scaled_params(mask_b11, p_scaled_bP):
-    # mask_b11: (B,1,H,W), p_scaled_bP: (B,P)
-    B, _, H, W = mask_b11.shape
-    P = p_scaled_bP.shape[1]
-    pch = p_scaled_bP.view(B, P, 1, 1).expand(B, P, H, W)
-    return torch.cat([mask_b11, pch], dim=1)
+def build_x_from_mask(mask_b11):
+    """Build spatial input tensor (mask only; params injected via FiLM)."""
+    return mask_b11
 
 def parse_fields_arg(fields_arg, y_keys):
     if fields_arg is None or fields_arg.strip() == "":
@@ -147,8 +144,8 @@ def masked_log_stats_np(y_pred, y_true, mask, eps=1e-12):
 def forward_from_scaled(model, norm, mask_2d, p_scaled_1d, device):
     m = torch.from_numpy(mask_2d).float().unsqueeze(0).unsqueeze(0).to(device)
     p = torch.from_numpy(p_scaled_1d).float().unsqueeze(0).to(device)
-    x = build_x_from_scaled_params(m, p)
-    y_norm = model(x)
+    x = build_x_from_mask(m)
+    y_norm = model(x, params=p)
     y_phys = norm.inverse(y_norm, m)
     return y_norm, y_phys, m
 
@@ -248,17 +245,10 @@ def main():
             if inv_mlp is None:
                 raise RuntimeError("--init nn requires --inverse-ckpt")
             with torch.no_grad():
-                # Build input and run encoder
-                H, W = m_np.shape
-                mask_t = m_t  # (1,1,H,W)
-                p_zero = torch.zeros(1, len(p_true_scaled), device=device)
-                # Use true scaled params to build x (same as forward)
-                p_ch = torch.from_numpy(p_true_scaled).float().to(device).view(1, -1, 1, 1).expand(1, -1, H, W)
-                x_inp = torch.cat([mask_t, p_ch], dim=1)
-                # Actually, for the inverse we want z from the target fields, not params
-                # Encode the target fields through the norm -> model encoder
-                # Build x from y_true_norm (the normalized target)
-                _, b = model.encode(y_true_norm[:, :model.enc1.net[0].in_channels] if y_true_norm.shape[1] >= model.enc1.net[0].in_channels else y_true_norm)
+                # Encode target fields to get bottleneck z for NN warm-start
+                p_true_t = torch.from_numpy(p_true_scaled).float().unsqueeze(0).to(device)
+                x_enc = build_x_from_mask(m_t)
+                _, b = model.encode(x_enc, params=p_true_t)
                 z = bottleneck_to_z(b)  # (1, z_dim)
                 z_n = (z.cpu().numpy() - inv_z_mu) / inv_z_std
                 z_n = np.clip(z_n, -5.0, 5.0)
@@ -304,8 +294,8 @@ def main():
                     _fit_val = [None]
                     def closure():
                         opt.zero_grad(set_to_none=True)
-                        x = build_x_from_scaled_params(m_t, p_var)
-                        y_pred_norm = model(x)
+                        x = build_x_from_mask(m_t)
+                        y_pred_norm = model(x, params=p_var)
                         y_pred_norm_sel = y_pred_norm[:, field_idx]
                         loss_fit = weighted_masked_mse(y_pred_norm_sel, y_true_norm_sel, m_t, cw_sel)
                         loss_reg = args.reg * (p_var ** 2).mean()
@@ -318,8 +308,8 @@ def main():
                     loss_item = _loss_val[0]
                     fit_item = _fit_val[0]
                 else:
-                    x = build_x_from_scaled_params(m_t, p_var)
-                    y_pred_norm = model(x)
+                    x = build_x_from_mask(m_t)
+                    y_pred_norm = model(x, params=p_var)
                     y_pred_norm_sel = y_pred_norm[:, field_idx]
                     loss_fit = weighted_masked_mse(y_pred_norm_sel, y_true_norm_sel, m_t, cw_sel)
                     loss_reg = args.reg * (p_var ** 2).mean()
@@ -342,8 +332,8 @@ def main():
                     )
 
             with torch.no_grad():
-                x = build_x_from_scaled_params(m_t, p_var)
-                y_pred_norm = model(x)
+                x = build_x_from_mask(m_t)
+                y_pred_norm = model(x, params=p_var)
                 fit_val = float(weighted_masked_mse(y_pred_norm[:, field_idx], y_true_norm_sel, m_t, cw_sel).item())
             cand = {
                 "fit": fit_val,

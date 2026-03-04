@@ -354,13 +354,15 @@ def run(smoke_test: bool = False):
         x_tr = _as_torch(train_s["x"], device).unsqueeze(0)
         y_tr = _as_torch(train_s["y"], device).unsqueeze(0)
         m_tr = _as_torch(train_s["mask"], device).unsqueeze(0)
-        yhat_tr = model(x_tr)
+        p_tr = _as_torch(train_s["params"], device).unsqueeze(0) if "params" in train_s else None
+        yhat_tr = model(x_tr, params=p_tr)
         fwd_mse_tr = masked_mse(yhat_tr, y_tr, m_tr)
 
         x_va = _as_torch(val_s["x"], device).unsqueeze(0)
         y_va = _as_torch(val_s["y"], device).unsqueeze(0)
         m_va = _as_torch(val_s["mask"], device).unsqueeze(0)
-        yhat_va = model(x_va)
+        p_va = _as_torch(val_s["params"], device).unsqueeze(0) if "params" in val_s else None
+        yhat_va = model(x_va, params=p_va)
         fwd_mse_va = masked_mse(yhat_va, y_va, m_va)
 
     inv_mse_tr = float(torch.mean((out_train["z_pred"] - out_train["z_true"])**2).item())

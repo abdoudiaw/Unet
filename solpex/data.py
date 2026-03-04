@@ -367,17 +367,12 @@ class SOLPSDataset(Dataset):
             x = y.clone()
             return {"x": x, "y": y, "mask": mask, "params": params, "idx": int(idx)}
 
-        # params-mode input (mask + optional geom + broadcast params)
-        H, W = mask.shape[-2:]
+        # params-mode input (mask + optional geom; params passed separately via FiLM)
         channels = [mask]  # (1,H,W)
 
         if self.Rn is not None:
             channels.append(torch.from_numpy(self.Rn).unsqueeze(0).float())
             channels.append(torch.from_numpy(self.Zn).unsqueeze(0).float())
-
-        P = int(params.numel())
-        if P > 0:
-            channels.append(params.view(P, 1, 1).expand(P, H, W))
 
         x = torch.cat(channels, dim=0)  # (Cin,H,W)
 

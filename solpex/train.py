@@ -17,6 +17,7 @@ def train_unet(
     inputs_mode="params",
     lam_grad=0.2, lam_w=1.0, lam_ev=0.0,
     epochs=10, base=32, param_scaler=None, model_cls=None,
+    P: int = 0, film_hidden: int = 128,
     save_path="unet_best.pt",
     return_history: bool = True,
     history_path=None,
@@ -62,7 +63,9 @@ def train_unet(
 
     if model_cls is None:
         from .models import UNet
-        model_cls = lambda in_ch, out_ch: UNet(in_ch=in_ch, out_ch=out_ch, base=base)
+        model_cls = lambda in_ch, out_ch: UNet(
+            in_ch=in_ch, out_ch=out_ch, base=base, P=P, film_hidden=film_hidden,
+        )
 
     model = model_cls(in_ch, out_ch).to(device)
 
@@ -165,6 +168,7 @@ def train_unet(
             x = b["x"].to(device, non_blocking=non_blocking)
             y = b["y"].to(device, non_blocking=non_blocking)
             m = b["mask"].to(device, non_blocking=non_blocking)
+            params = b["params"].to(device, non_blocking=non_blocking) if P > 0 else None
 
             # for channels_last performance
             if use_cuda and channels_last:
@@ -173,7 +177,7 @@ def train_unet(
             w_map = w_map.to(device)
             with torch.amp.autocast(device_type="cuda", enabled=use_amp, dtype=amp_dtype):
 
-                p = model(x)
+                p = model(x, params=params)
                 loss_base = masked_weighted_loss(
                     p, y, m,
                     w=w_map.to(p.dtype),
@@ -247,12 +251,13 @@ def train_unet(
                 x = b["x"].to(device, non_blocking=non_blocking)
                 y = b["y"].to(device, non_blocking=non_blocking)
                 m = b["mask"].to(device, non_blocking=non_blocking)
+                params = b["params"].to(device, non_blocking=non_blocking) if P > 0 else None
 
                 if use_cuda and channels_last:
                     x = x.contiguous(memory_format=torch.channels_last)
 
                 with torch.amp.autocast(device_type="cuda", enabled=use_amp, dtype=amp_dtype):
-                    p = model(x)
+                    p = model(x, params=params)
                     loss_b = masked_weighted_loss(
                         p, y, m,
                         w=w_map.to(p.dtype),
@@ -325,6 +330,7 @@ def train_unet(
                 "best_val": float(best_val),
                 "norm": _norm_to_ckpt(norm),
                 "in_ch": in_ch, "out_ch": out_ch, "base": base, "dropout": getattr(model, "dropout", 0.0),
+                "P": P, "film_hidden": film_hidden,
                 "inputs_mode": inputs_mode,
                 "param_mu": mu,
                 "param_std": std,

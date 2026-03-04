@@ -221,9 +221,10 @@ def extract_z_dataset(
 
     for bi, batch in enumerate(loader):
         x = batch["x"].to(device)
+        params = batch["params"].to(device) if "params" in batch else None
 
         # model must support return_bottleneck=True
-        yhat, b = ae_model(x, return_bottleneck=True)  # b: (B,C,h,w)
+        yhat, b = ae_model(x, params=params, return_bottleneck=True)  # b: (B,C,h,w)
 
         z_t = bottleneck_to_z(b)  # (B, z_dim) torch on device
         z = z_t.detach().float().cpu().numpy()  # ALWAYS numpy on CPU

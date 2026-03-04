@@ -1,0 +1,5 @@
+numpy
+scipy
+h5py
+matplotlib
+torch>=2.2
