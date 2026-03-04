@@ -47,3 +47,11 @@ python scripts/train_inverse_mlp.py
 ```
 
 Configure via env vars: `NPZ_PATH`, `BASE_DIR`, `Y_KEYS_FWD`, `CHANNEL_WEIGHTS`, `EPOCHS_FWD`, `SWEEP_TRIALS`, etc.
+
+## Inverse optimization
+
+- `eval_inverse_cycle_conditional_unet.py` — optimizes params to match target fields via Adam or L-BFGS
+- Supports early stopping (`--early-stop-patience`, `--early-stop-tol`) to skip plateaued runs
+- NN-warm-start (`--init nn --inverse-ckpt`) uses trained inverse MLP for initial guess, then refines with optimizer
+- Multiple restarts (`--n-restarts`) with best-fit selection
+- Adam tends to plateau quickly (~50 steps); L-BFGS converges faster (~150 steps) for this problem

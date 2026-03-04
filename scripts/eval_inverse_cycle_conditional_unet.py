@@ -176,6 +176,10 @@ def main():
     ap.add_argument("--reg", type=float, default=1e-4, help="L2 regularization on scaled params.")
     ap.add_argument("--clip-scaled", type=float, default=4.0, help="Clamp recovered scaled params to [-v, v].")
     ap.add_argument("--log-eps", type=float, default=1e-12)
+    ap.add_argument("--early-stop-patience", type=int, default=100,
+                    help="Stop optimization if loss doesn't improve for this many steps (0=disabled).")
+    ap.add_argument("--early-stop-tol", type=float, default=1e-6,
+                    help="Minimum relative improvement to reset early-stop counter.")
     ap.add_argument("--print-every", type=int, default=50)
     ap.add_argument("--plot-fontsize", type=float, default=16.0, help="Font size for inverse correlation plot.")
     ap.add_argument("--plot-tick-fontsize", type=float, default=13.0, help="Tick font size for inverse correlation plot.")
@@ -312,6 +316,12 @@ def main():
                     opt, T_max=args.steps, eta_min=1e-5,
                 )
 
+            # Early stopping state
+            es_patience = args.early_stop_patience
+            es_tol = args.early_stop_tol
+            es_best_loss = float("inf")
+            es_wait = 0
+
             for step in range(args.steps):
                 if use_lbfgs:
                     _loss_val = [None]
@@ -354,6 +364,21 @@ def main():
                         f"[case {case_i+1}/{n_cases} idx={int(gidx)} r={r+1}/{n_restarts}] "
                         f"step {step:04d} loss={loss_item:.4e} fit={fit_item:.4e}"
                     )
+
+                # Early stopping check
+                if es_patience > 0:
+                    rel_improv = (es_best_loss - loss_item) / max(abs(es_best_loss), 1e-12)
+                    if rel_improv > es_tol:
+                        es_best_loss = loss_item
+                        es_wait = 0
+                    else:
+                        es_wait += 1
+                        if es_wait >= es_patience:
+                            print(
+                                f"[case {case_i+1}/{n_cases} idx={int(gidx)} r={r+1}/{n_restarts}] "
+                                f"early stop at step {step} (no improvement for {es_patience} steps)"
+                            )
+                            break
 
             with torch.no_grad():
                 x = build_x_from_mask(m_t)
