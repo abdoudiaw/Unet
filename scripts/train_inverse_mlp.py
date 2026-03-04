@@ -56,7 +56,7 @@ def extract_z_from_forward(model, Y, M, P_raw, p_mu, p_std, device, batch_size=1
         p_scaled = (P_raw[i:j] - p_mu) / p_std
         p_t = torch.from_numpy(p_scaled).float().to(device)  # (B,P)
 
-        _, b = model.encode(mask_b, params=p_t)  # bottleneck
+        b, _ = model.encode(mask_b, params=p_t)  # bottleneck
         z = bottleneck_to_z(b)  # (B, z_dim)
         Zs.append(z.cpu().numpy())
 

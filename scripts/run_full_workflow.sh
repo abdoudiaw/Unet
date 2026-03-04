@@ -4,9 +4,11 @@ set -euo pipefail
 # Full SOLPS-AI workflow:
 # 1) Train params->(plasma+sources) model (conditional U-Net sweep)
 # 2) Evaluate/plot params->fields model
-# 3) Inverse + cycle evaluation
-# 4) Train plasma->sources model (missing step)
-# 5) Evaluate/plot plasma->sources model
+# 3) Train inverse MLP (z->params)
+# 4) Inverse + cycle evaluation (NN-warm-started L-BFGS)
+# 5) Inverse evaluation (pure L-BFGS, no MLP)
+# 6) Train plasma->sources model
+# 7) Evaluate/plot plasma->sources model
 
 # -----------------------------
 # User-configurable settings
@@ -41,7 +43,11 @@ INV_INIT="$(default_if_empty "${INV_INIT:-}" "noisy_true")"
 INV_NOISE_STD="$(default_if_empty "${INV_NOISE_STD:-}" "0.2")"
 INV_FIELDS="$(default_if_empty "${INV_FIELDS:-}" "Te,Ti,ne,ni,ua,Sp,Qe,Qi,Sm")"
 
-# Step 4: plasma -> sources (missing step from your list)
+# Step 5: pure inverse eval (no MLP warm-start)
+INV_PURE_N_CASES="$(default_if_empty "${INV_PURE_N_CASES:-}" "20")"
+INV_PURE_STEPS="$(default_if_empty "${INV_PURE_STEPS:-}" "400")"
+
+# Step 6: plasma -> sources
 EPOCHS_SRC="$(default_if_empty "${EPOCHS_SRC:-}" "200")"
 EARLY_STOP_PATIENCE_SRC="$(default_if_empty "${EARLY_STOP_PATIENCE_SRC:-}" "30")"
 SRC_IN_KEYS="$(default_if_empty "${SRC_IN_KEYS:-}" "Te,Ti,ne,ni,ua")"
@@ -74,7 +80,7 @@ if [[ ! -f "${NPZ_PATH}" ]]; then
   exit 2
 fi
 
-echo "=== Step 1/6: Train params->(plasma+sources) conditional U-Net ==="
+echo "=== Step 1/7: Train params->(plasma+sources) conditional U-Net ==="
 MPLBACKEND=Agg \
 NPZ_PATH="${NPZ_PATH}" \
 Y_KEYS="${Y_KEYS_FWD}" \
@@ -85,7 +91,7 @@ EARLY_STOP_PATIENCE="${EARLY_STOP_PATIENCE_FWD}" \
 SWEEP_TRIALS="${SWEEP_TRIALS}" \
 python run_conditional_unet_pipeline.py
 
-echo "=== Step 2/6: Plot/evaluate params->(plasma+sources) model ==="
+echo "=== Step 2/7: Plot/evaluate params->(plasma+sources) model ==="
 MPLBACKEND=Agg python plot_paper_evaluation_mesh.py \
   --npz "${NPZ_PATH}" \
   --ckpt outputs/cond_unet.pt \
@@ -101,7 +107,7 @@ MPLBACKEND=Agg python plot_paper_evaluation_mesh.py \
   --log-metrics \
   --outdir outputs/paper_eval_mesh_all_abs
 
-echo "=== Step 3/6: Train inverse MLP (z->params) ==="
+echo "=== Step 3/7: Train inverse MLP (z->params) ==="
 INV_MLP_EPOCHS="$(default_if_empty "${INV_MLP_EPOCHS:-}" "400")"
 INV_MLP_HIDDEN="$(default_if_empty "${INV_MLP_HIDDEN:-}" "128,128")"
 python train_inverse_mlp.py \
@@ -111,7 +117,7 @@ python train_inverse_mlp.py \
   --epochs "${INV_MLP_EPOCHS}" \
   --hidden "${INV_MLP_HIDDEN}"
 
-echo "=== Step 4/6: Inverse + cycle evaluation (fields->params->fields) ==="
+echo "=== Step 4/7: Inverse + cycle evaluation (NN-warm-started L-BFGS) ==="
 MPLBACKEND=Agg python eval_inverse_cycle_conditional_unet.py \
   --npz "${NPZ_PATH}" \
   --ckpt outputs/cond_unet.pt \
@@ -128,7 +134,19 @@ MPLBACKEND=Agg python eval_inverse_cycle_conditional_unet.py \
   --out-plot outputs/inverse_param_correlation.png \
   --out-param-corr-csv outputs/inverse_param_correlation.csv
 
-echo "=== Step 5/6: Train plasma->sources model (Te/Ti/ne/ni/ua -> Qp/Sp/Qe/Qi/Sm) ==="
+echo "=== Step 5/7: Inverse evaluation (pure L-BFGS, no MLP) ==="
+MPLBACKEND=Agg python eval_inverse_cycle_conditional_unet.py \
+  --npz "${NPZ_PATH}" \
+  --ckpt outputs/cond_unet.pt \
+  --optimizer lbfgs \
+  --n-cases "${INV_PURE_N_CASES}" \
+  --steps "${INV_PURE_STEPS}" \
+  --fields "${INV_FIELDS}" \
+  --out-csv outputs/inverse_cycle_metrics_pure.csv \
+  --out-plot outputs/inverse_param_correlation_pure.png \
+  --out-param-corr-csv outputs/inverse_param_correlation_pure.csv
+
+echo "=== Step 6/7: Train plasma->sources model (Te/Ti/ne/ni/ua -> Sp/Qe/Qi/Sm) ==="
 MPLBACKEND=Agg \
 NPZ_PATH="${NPZ_PATH}" \
 IN_KEYS="${SRC_IN_KEYS}" \
@@ -141,7 +159,7 @@ LR="${SRC_LR}" \
 BATCH_SIZE="${SRC_BATCH}" \
 python run_source_from_plasma_pipeline.py
 
-echo "=== Step 6/6: Plot/evaluate plasma->sources model ==="
+echo "=== Step 7/7: Plot/evaluate plasma->sources model ==="
 MPLBACKEND=Agg python eval_source_from_plasma_mesh.py \
   --npz "${NPZ_PATH}" \
   --ckpt outputs/source_from_plasma.pt \
@@ -161,5 +179,8 @@ echo "  outputs/inverse_mlp.pt"
 echo "  outputs/inverse_cycle_metrics.csv"
 echo "  outputs/inverse_param_correlation.png"
 echo "  outputs/inverse_param_correlation.csv"
+echo "  outputs/inverse_cycle_metrics_pure.csv"
+echo "  outputs/inverse_param_correlation_pure.png"
+echo "  outputs/inverse_param_correlation_pure.csv"
 echo "  outputs/source_from_plasma.pt"
 echo "  outputs/source_eval_mesh_abs/"
