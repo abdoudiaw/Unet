@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: solpex
+Version: 0.1.0
+Summary: SOLPEx: ML surrogate models for SOLPS-ITER edge plasma predictions
+Requires-Python: >=3.9
+Requires-Dist: numpy
+Requires-Dist: scipy
+Requires-Dist: h5py
+Requires-Dist: matplotlib
+Requires-Dist: torch>=2.2

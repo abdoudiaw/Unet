@@ -99,23 +99,23 @@ EPOCHS="${EPOCHS_FWD}" \
 EARLY_STOP_PATIENCE="${EARLY_STOP_PATIENCE_FWD}" \
 SWEEP_TRIALS="${SWEEP_TRIALS}" \
 Z_DIM="${Z_DIM}" \
-python run_conditional_unet_pipeline.py
+#python run_conditional_unet_pipeline.py
 
-echo "=== Step 2/7: Plot/evaluate params->(plasma+sources) model ==="
-MPLBACKEND=Agg python plot_paper_evaluation_mesh.py \
-  --npz "${NPZ_PATH}" \
-  --ckpt outputs/cond_unet.pt \
-  --base-dir "${BASE_DIR}" \
-  --all-fields \
-  --paper-grid \
-  --paper-grid-rows 3 \
-  --paper-grid-split-groups \
-  --paper-grid-k 0 \
-  --error-mode abs \
-  --error-sign absolute \
-  --log-display auto \
-  --log-metrics \
-  --outdir outputs/paper_eval_mesh_all_abs
+# echo "=== Step 2/7: Plot/evaluate params->(plasma+sources) model ==="
+# MPLBACKEND=Agg python plot_paper_evaluation_mesh.py \
+#   --npz "${NPZ_PATH}" \
+#   --ckpt outputs/cond_unet.pt \
+#   --base-dir "${BASE_DIR}" \
+#   --all-fields \
+#   --paper-grid \
+#   --paper-grid-rows 3 \
+#   --paper-grid-split-groups \
+#   --paper-grid-k 0 \
+#   --error-mode abs \
+#   --error-sign absolute \
+#   --log-display auto \
+#   --log-metrics \
+#   --outdir outputs/paper_eval_mesh_all_abs
 
 echo "=== Step 3/7: Train inverse MLP (z->params) ==="
 INV_MLP_EPOCHS="$(default_if_empty "${INV_MLP_EPOCHS:-}" "400")"
