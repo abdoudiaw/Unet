@@ -328,15 +328,9 @@ def main():
                         _loss_val[0] = float(loss.item())
                         _fit_val[0] = float(loss_fit.item())
                         return loss
-                    p_before = p_var.detach().clone()
                     opt.step(closure)
                     loss_item = _loss_val[0]
                     fit_item = _fit_val[0]
-                    # Debug: check if L-BFGS actually moved params
-                    if step == 0:
-                        gnorm = p_var.grad.norm().item() if p_var.grad is not None else -1
-                        pdelta = (p_var.detach() - p_before).norm().item()
-                        print(f"  [debug] grad_norm={gnorm:.4e} param_delta={pdelta:.4e}")
                 else:
                     x = build_x_from_mask(m_t)
                     y_pred_norm = model(x, params=p_var)

@@ -132,12 +132,12 @@ python train_inverse_mlp.py \
   --hidden "${INV_MLP_HIDDEN}" \
   ${INV_CYCLE_FLAGS}
 
-echo "=== Step 4/7: Inverse + cycle evaluation (NN-warm-started L-BFGS) ==="
+echo "=== Step 4/7: Inverse + cycle evaluation (NN-warm-started Adam) ==="
 MPLBACKEND=Agg python eval_inverse_cycle_conditional_unet.py \
   --npz "${NPZ_PATH}" \
   --ckpt outputs/cond_unet.pt \
   --inverse-ckpt outputs/inverse_mlp.pt \
-  --optimizer lbfgs \
+  --optimizer adam \
   --n-cases "${INV_N_CASES}" \
   --steps "${INV_STEPS}" \
   --lr "${INV_LR}" \
@@ -149,11 +149,11 @@ MPLBACKEND=Agg python eval_inverse_cycle_conditional_unet.py \
   --out-plot outputs/inverse_param_correlation.png \
   --out-param-corr-csv outputs/inverse_param_correlation.csv
 
-echo "=== Step 5/7: Inverse evaluation (pure L-BFGS, no MLP) ==="
+echo "=== Step 5/7: Inverse evaluation (pure Adam, no MLP) ==="
 MPLBACKEND=Agg python eval_inverse_cycle_conditional_unet.py \
   --npz "${NPZ_PATH}" \
   --ckpt outputs/cond_unet.pt \
-  --optimizer lbfgs \
+  --optimizer adam \
   --n-cases "${INV_PURE_N_CASES}" \
   --steps "${INV_PURE_STEPS}" \
   --fields "${INV_FIELDS}" \
