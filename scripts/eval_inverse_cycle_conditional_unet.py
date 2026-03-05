@@ -241,12 +241,24 @@ def main():
             print(f"  [note] --inverse-ckpt provided but --init={args.init}; "
                   "set --init nn to use NN warm-start.")
 
-    Y, M, P_raw_phys, y_keys, p_keys_phys = load_dataset(args.npz)
+    Y, M, P_raw_phys, y_keys_npz, p_keys_phys = load_dataset(args.npz)
     # Apply param transform to match what the forward model was trained on
     if ckpt_param_transform and ckpt_param_transform != "none":
         P_raw, p_keys = apply_param_transform(P_raw_phys, p_keys_phys, ckpt_param_transform)
     else:
         P_raw, p_keys = P_raw_phys.copy(), list(p_keys_phys)
+
+    # Filter Y channels to match the model's trained output channels.
+    # The npz may contain more channels (e.g. ni) than the model was trained on.
+    model_y_keys = getattr(norm, "y_keys", None)
+    if model_y_keys is not None and list(model_y_keys) != y_keys_npz:
+        keep_idx = [y_keys_npz.index(k) for k in model_y_keys if k in y_keys_npz]
+        Y = Y[:, keep_idx]
+        y_keys = [y_keys_npz[i] for i in keep_idx]
+        print(f"Filtered Y channels: {y_keys_npz} -> {y_keys} (model out_ch={len(y_keys)})")
+    else:
+        y_keys = y_keys_npz
+
     field_idx, field_names = parse_fields_arg(args.fields, y_keys)
     cw_map = parse_channel_weights_arg(args.channel_weights, y_keys, default=1.0)
     cw = torch.tensor([cw_map[k] for k in y_keys], dtype=torch.float32, device=device)
