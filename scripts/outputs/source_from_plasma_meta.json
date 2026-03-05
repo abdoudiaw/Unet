@@ -4,7 +4,6 @@
     "Te",
     "Ti",
     "ne",
-    "ni",
     "ua"
   ],
   "output_keys": [
@@ -20,5 +19,5 @@
   "batch_size": 4,
   "base": 32,
   "lr": 0.0003,
-  "best_val_mse_norm": 0.2630263958891777
+  "best_val_mse_norm": 0.25812192812357865
 }
