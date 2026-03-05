@@ -755,7 +755,7 @@ def main():
     npz_path = args.npz if args.npz is not None else args.npz_path
     if npz_path is None:
         raise ValueError("Provide --npz (or --npz_path).")
-    model, norm, (p_mu, p_std) = load_checkpoint(args.ckpt, device)
+    model, norm, (p_mu, p_std), *_ = load_checkpoint(args.ckpt, device)
     Y, y_keys_data, M, P, p_keys = load_npz_all(npz_path)
     _, val_idx = split_indices(Y.shape[0], split=args.split, seed=args.seed)
     run_name, grid, polys = load_mesh_polygons(args.base_dir, args.run_name)

@@ -85,7 +85,7 @@ def main():
         os.makedirs(outdir, exist_ok=True)
 
     device = pick_device()
-    model, norm, (p_mu, p_std) = load_checkpoint(args.ckpt, device)
+    model, norm, (p_mu, p_std), *_ = load_checkpoint(args.ckpt, device)
     Y, y_keys_data, M, P, _ = load_npz_all(args.npz)
     _, val_idx = split_indices(Y.shape[0], split=args.split, seed=args.seed)
     if len(val_idx) == 0:

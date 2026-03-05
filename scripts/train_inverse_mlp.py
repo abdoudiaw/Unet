@@ -27,6 +27,7 @@ import numpy as np
 import torch
 
 from solpex.predict import load_checkpoint
+from solpex.data import apply_param_transform
 from solpex.models import bottleneck_to_z
 from solpex.latent import ZToParam, ParamToZ, train_z2param, train_cycle_consistent
 from solpex.utils import pick_device
@@ -92,11 +93,12 @@ def main():
     print("Device:", device)
 
     # Load forward model
-    model, norm, (p_mu, p_std) = load_checkpoint(args.ckpt, device)
+    model, norm, (p_mu, p_std), ckpt_param_transform, ckpt_param_keys = load_checkpoint(args.ckpt, device)
     if p_mu is None or p_std is None:
         raise RuntimeError("Checkpoint missing param_mu / param_std.")
     p_mu = np.asarray(p_mu, dtype=np.float32)
     p_std = np.asarray(p_std, dtype=np.float32)
+    print(f"param_transform={ckpt_param_transform}, param_keys={ckpt_param_keys}")
     print(f"Forward model loaded: in_ch={model.enc1.net[0].in_channels}")
 
     # Load dataset
@@ -123,8 +125,12 @@ def main():
               else [str(k) for k in d["x_keys"]] if "x_keys" in d.files
               else [f"p{i}" for i in range(P_raw.shape[1])])
 
+    # Apply same param transform as forward model
+    if ckpt_param_transform and ckpt_param_transform != "none":
+        P_raw, p_keys = apply_param_transform(P_raw, p_keys, ckpt_param_transform)
+
     N = Y.shape[0]
-    print(f"Dataset: N={N}, Y={Y.shape}, P={P_raw.shape}, fields={y_keys}")
+    print(f"Dataset: N={N}, Y={Y.shape}, P={P_raw.shape}, fields={y_keys}, p_keys={p_keys}")
 
     # Extract latent Z from forward model encoder
     print("Extracting bottleneck latents...")
@@ -178,6 +184,7 @@ def main():
             "use_layernorm": use_ln,
             "cycle": True,
             "lam_cycle": args.lam_cycle,
+            "param_transform": ckpt_param_transform,
         })
         torch.save(ckpt, args.out)
         print(f"Saved cycle-consistent inverse checkpoint to {args.out}")
@@ -206,6 +213,7 @@ def main():
             "hidden": list(hidden),
             "forward_ckpt": args.ckpt,
             "use_layernorm": use_ln,
+            "param_transform": ckpt_param_transform,
         })
         torch.save(ckpt, args.out)
         print(f"Saved inverse MLP to {args.out}")

@@ -243,7 +243,7 @@ class SOLPSDataset(Dataset):
       - params: (P,) if inputs != "autoencoder"
     """
     def __init__(self, path, geom_h5=None, normalizer=None, inputs="autoencoder",
-                 y_key="Te", y_keys=None):
+                 y_key="Te", y_keys=None, param_transform=None):
         self.normalizer = normalizer
         self.inputs = str(inputs)
         self.y_key = str(y_key)
@@ -330,6 +330,13 @@ class SOLPSDataset(Dataset):
             params = np.array(params).astype(np.float32)
             if params.ndim != 2 or params.shape[0] != self.N:
                 raise ValueError(f"params has shape {params.shape}, expected (N,P) with N={self.N}")
+
+        # ---- param reparameterization ----
+        raw_param_keys = list(d["param_keys"]) if "param_keys" in d.files else [f"p{i}" for i in range(params.shape[1])]
+        self.param_transform = param_transform
+        if param_transform and param_transform != "none" and params.shape[1] > 0:
+            params, raw_param_keys = apply_param_transform(params, raw_param_keys, param_transform)
+        self.param_keys = raw_param_keys
         self.params = params  # (N,P)
 
     def __len__(self):
@@ -383,6 +390,65 @@ class SOLPSDataset(Dataset):
         }
         return item
 
+# ---------- Parameter transforms ----------
+# Maps (Gamma_D2, n_core) -> (throughput, ratio) and back.
+# Other params (Ptot_W, dna, hci) pass through unchanged.
+
+PARAM_TRANSFORMS = {"none", "throughput_ratio"}
+
+def _find_param_indices(param_keys, names):
+    """Return column indices for named params, or None if not found."""
+    pk = [str(k) for k in param_keys]
+    return {n: pk.index(n) if n in pk else None for n in names}
+
+def apply_param_transform(params, param_keys, transform):
+    """Transform raw params in-place-safe. Returns (new_params, new_keys)."""
+    if transform is None or transform == "none":
+        return params.copy(), list(param_keys)
+    if transform != "throughput_ratio":
+        raise ValueError(f"Unknown param_transform={transform!r}. Choose from {PARAM_TRANSFORMS}")
+
+    idx = _find_param_indices(param_keys, ["Gamma_D2", "n_core"])
+    ig, inc = idx["Gamma_D2"], idx["n_core"]
+    if ig is None or inc is None:
+        raise KeyError(f"throughput_ratio requires Gamma_D2 and n_core in param_keys={list(param_keys)}")
+
+    out = params.astype(np.float64).copy()
+    G = out[:, ig].copy()
+    nc = out[:, inc].copy()
+    throughput = G + nc
+    out[:, ig] = np.log10(throughput)       # log10(throughput)
+    out[:, inc] = nc / throughput            # ratio ∈ (0, 1)
+
+    keys = list(param_keys)
+    keys[ig] = "log10_thr"
+    keys[inc] = "ratio_nc"
+    return out.astype(np.float32), keys
+
+def invert_param_transform(params, param_keys, transform):
+    """Inverse of apply_param_transform: transformed -> raw physical."""
+    if transform is None or transform == "none":
+        return params.copy(), list(param_keys)
+    if transform != "throughput_ratio":
+        raise ValueError(f"Unknown param_transform={transform!r}")
+
+    idx = _find_param_indices(param_keys, ["log10_thr", "ratio_nc"])
+    it, ir = idx["log10_thr"], idx["ratio_nc"]
+    if it is None or ir is None:
+        raise KeyError(f"invert_param_transform requires log10_thr and ratio_nc in param_keys={list(param_keys)}")
+
+    out = params.astype(np.float64).copy()
+    thr = 10.0 ** out[:, it]
+    r = np.clip(out[:, ir], 1e-12, 1.0 - 1e-12)
+    out[:, it] = thr * (1.0 - r)            # Gamma_D2
+    out[:, ir] = thr * r                     # n_core
+
+    keys = list(param_keys)
+    keys[it] = "Gamma_D2"
+    keys[ir] = "n_core"
+    return out.astype(np.float32), keys
+
+
 def fit_param_scaler(raw_params_train):
     x = raw_params_train.astype(np.float64)
     mu  = x.mean(axis=0)
@@ -409,6 +475,7 @@ def make_loaders(
     geom_h5=None,
     norms_by_name=None,          # NEW (dict)
     num_workers=0,
+    param_transform=None,
 ):
     # raw dataset (no normalization) to compute split & fit normalizer
     raw_all = SOLPSDataset(
@@ -418,6 +485,7 @@ def make_loaders(
         inputs=inputs_mode,
         y_key=y_key,
         y_keys=y_keys,
+        param_transform=param_transform,
     )
     N = len(raw_all)
 
@@ -450,6 +518,7 @@ def make_loaders(
         y_key=y_key,
         y_keys=y_keys,
         normalizer=norm,
+        param_transform=param_transform,
     )
     ds_va = SOLPSDataset(
         npz_path,
@@ -458,6 +527,7 @@ def make_loaders(
         y_key=y_key,
         y_keys=y_keys,
         normalizer=norm,
+        param_transform=param_transform,
     )
 
     # param scaling if in params mode
@@ -496,7 +566,8 @@ def make_loaders(
     P = train_set.dataset.params.shape[1] if hasattr(train_set.dataset, "params") else 0
 
     H, W = train_set[0]["mask"].shape[-2:]
-    return train_loader, val_loader, norm, P, (H, W), (param_mu, param_std)
+    param_keys_out = raw_all.param_keys
+    return train_loader, val_loader, norm, P, (H, W), (param_mu, param_std), param_transform, param_keys_out
 
 
 def _load_truth_and_params(npz_path, idx=0, y_keys_wanted=None):

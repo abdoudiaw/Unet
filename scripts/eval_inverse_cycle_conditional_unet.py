@@ -13,6 +13,7 @@ import torch
 from scipy.stats import spearmanr
 
 from solpex.predict import load_checkpoint
+from solpex.data import apply_param_transform, invert_param_transform
 from solpex.utils import pick_device
 
 POSITIVE_KEYS = {"Te", "Ti", "ne", "ni", "Sp"}
@@ -193,11 +194,12 @@ def main():
     device = pick_device()
     print("Device:", device)
 
-    model, norm, (p_mu, p_std) = load_checkpoint(args.ckpt, device)
+    model, norm, (p_mu, p_std), ckpt_param_transform, ckpt_param_keys = load_checkpoint(args.ckpt, device)
     if p_mu is None or p_std is None:
         raise RuntimeError("Checkpoint missing param scaler (param_mu/param_std).")
     p_mu = np.asarray(p_mu, dtype=np.float32)
     p_std = np.asarray(p_std, dtype=np.float32)
+    print(f"param_transform={ckpt_param_transform}, param_keys={ckpt_param_keys}")
     print(f"Forward model: P={model.P}, z_dim={getattr(model, 'z_dim', 0)}, "
           f"has_film={hasattr(model, 'film_enc1')}")
 
@@ -239,7 +241,12 @@ def main():
             print(f"  [note] --inverse-ckpt provided but --init={args.init}; "
                   "set --init nn to use NN warm-start.")
 
-    Y, M, P_raw, y_keys, p_keys = load_dataset(args.npz)
+    Y, M, P_raw_phys, y_keys, p_keys_phys = load_dataset(args.npz)
+    # Apply param transform to match what the forward model was trained on
+    if ckpt_param_transform and ckpt_param_transform != "none":
+        P_raw, p_keys = apply_param_transform(P_raw_phys, p_keys_phys, ckpt_param_transform)
+    else:
+        P_raw, p_keys = P_raw_phys.copy(), list(p_keys_phys)
     field_idx, field_names = parse_fields_arg(args.fields, y_keys)
     cw_map = parse_channel_weights_arg(args.channel_weights, y_keys, default=1.0)
     cw = torch.tensor([cw_map[k] for k in y_keys], dtype=torch.float32, device=device)
@@ -392,20 +399,29 @@ def main():
                 best = cand
 
         p_rec_scaled = best["p_scaled"]
-        p_rec_raw = p_rec_scaled * p_std + p_mu
+        p_rec_transformed = p_rec_scaled * p_std + p_mu  # unscaled but still in transformed space
+
+        # Invert param transform to get physical params for reporting
+        if ckpt_param_transform and ckpt_param_transform != "none":
+            p_rec_phys, _ = invert_param_transform(p_rec_transformed[None, :], p_keys, ckpt_param_transform)
+            p_rec_phys = p_rec_phys[0]
+            p_true_phys = P_raw_phys[gidx]
+        else:
+            p_rec_phys = p_rec_transformed
+            p_true_phys = P_raw[gidx]
 
         # forward cycle with recovered params
-        y_rec_norm, y_rec_phys, _ = forward_from_scaled(model, norm, m_np, p_rec_scaled, device)
+        y_rec_norm, y_rec_phys_t, _ = forward_from_scaled(model, norm, m_np, p_rec_scaled, device)
         inv_fit_mse_norm = float(weighted_masked_mse(y_rec_norm[:, field_idx], y_true_norm_sel, m_t, cw_sel).item())
         cyc_mae_norm = float(masked_mae(y_rec_norm[:, field_idx], y_true_norm_sel, m_t).item())
 
-        y_rec_phys_np = y_rec_phys.detach().cpu().numpy()[0]
+        y_rec_phys_np = y_rec_phys_t.detach().cpu().numpy()[0]
         y_true_phys_np = y_true_t.detach().cpu().numpy()[0]
         cyc_mae_phys, cyc_rmse_phys = masked_stats_np(y_rec_phys_np, y_true_phys_np, m_np, eps=args.log_eps)
         cyc_log_mae, cyc_log_rmse = masked_log_stats_np(y_rec_phys_np, y_true_phys_np, m_np, eps=args.log_eps)
 
-        p_abs = np.abs(p_rec_raw - p_true_raw)
-        p_rel = np.abs((p_rec_raw - p_true_raw) / np.maximum(np.abs(p_true_raw), 1e-12))
+        p_abs = np.abs(p_rec_phys - p_true_phys)
+        p_rel = np.abs((p_rec_phys - p_true_phys) / np.maximum(np.abs(p_true_phys), 1e-12))
 
         row = {
             "global_idx": int(gidx),
@@ -431,9 +447,9 @@ def main():
                 lmae_c, lrmse_c = masked_log_stats_np(yc_pred, yc_true, m_np, eps=args.log_eps)
                 row[f"{yk}_cycle_log_mae"] = lmae_c
                 row[f"{yk}_cycle_log_rmse"] = lrmse_c
-        for k, name in enumerate(p_keys):
-            row[f"{name}_true"] = float(p_true_raw[k])
-            row[f"{name}_rec"] = float(p_rec_raw[k])
+        for k, name in enumerate(p_keys_phys):
+            row[f"{name}_true"] = float(p_true_phys[k])
+            row[f"{name}_rec"] = float(p_rec_phys[k])
             row[f"{name}_abs_err"] = float(p_abs[k])
             row[f"{name}_rel_err"] = float(p_rel[k])
         rows.append(row)
@@ -447,7 +463,7 @@ def main():
             w.writerow(r)
 
     # Parameter true-vs-recovered correlation plots
-    nP = len(p_keys)
+    nP = len(p_keys_phys)
     ncols = min(3, nP)
     nrows = int(np.ceil(nP / ncols))
     plt.rcParams.update(
@@ -460,7 +476,7 @@ def main():
     )
     fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows), constrained_layout=True)
     axes = np.atleast_1d(axes).reshape(nrows, ncols)
-    for k, name in enumerate(p_keys):
+    for k, name in enumerate(p_keys_phys):
         r = k // ncols
         c = k % ncols
         ax = axes[r, c]
@@ -486,12 +502,11 @@ def main():
         c = k % ncols
         axes[r, c].axis("off")
     fig.savefig(args.out_plot, dpi=220, bbox_inches="tight")
-    plt.show()
     plt.close(fig)
 
     # Per-parameter correlation table
     corr_rows = []
-    for name in p_keys:
+    for name in p_keys_phys:
         t = np.array([row[f"{name}_true"] for row in rows], dtype=float)
         p = np.array([row[f"{name}_rec"] for row in rows], dtype=float)
         ae = np.abs(p - t)

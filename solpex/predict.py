@@ -10,6 +10,8 @@ from .data import (
     MaskedLogStandardizer,
     MaskedSymLogStandardizer,
     MultiChannelNormalizer,
+    apply_param_transform,
+    invert_param_transform,
 )
 
 def scale_params(params, mu, std):
@@ -86,7 +88,10 @@ def load_checkpoint(path, device):
     else:
         param_scaler = ckpt.get("param_scaler", (None, None))
 
-    return model, norm, param_scaler
+    pt = ckpt.get("param_transform", None)
+    pk = ckpt.get("param_keys", None)
+
+    return model, norm, param_scaler, pt, pk
 
 def predict_fields(model, norm, mask, params, Rn=None, Zn=None, device=None, as_numpy=True):
     model.eval()

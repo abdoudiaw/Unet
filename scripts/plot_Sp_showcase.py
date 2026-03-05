@@ -162,7 +162,7 @@ def main():
 
     device = pick_device()
     ck = torch.load(args.ckpt, map_location="cpu", weights_only=False)
-    model, y_norm, (p_mu, p_std) = load_checkpoint(args.ckpt, device)
+    model, y_norm, (p_mu, p_std), *_ = load_checkpoint(args.ckpt, device)
     p_mu = None if p_mu is None else np.asarray(p_mu, dtype=np.float32)
     p_std = None if p_std is None else np.asarray(p_std, dtype=np.float32)
     source_mode = ("x_norm" in ck)

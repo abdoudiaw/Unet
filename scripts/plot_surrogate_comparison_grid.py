@@ -105,12 +105,12 @@ def main():
     picks = rng.choice(val_idx, size=min(args.n_cases, len(val_idx)), replace=False)
     n = len(picks)
 
-    model_p, norm_p, (mu_p, sd_p) = load_checkpoint(args.ckpt_proposed, device)
+    model_p, norm_p, (mu_p, sd_p), *_ = load_checkpoint(args.ckpt_proposed, device)
     ci_p = get_channel_idx(norm_p, args.y_key)
 
     has_baseline = args.ckpt_baseline is not None
     if has_baseline:
-        model_b, norm_b, (mu_b, sd_b) = load_checkpoint(args.ckpt_baseline, device)
+        model_b, norm_b, (mu_b, sd_b), *_ = load_checkpoint(args.ckpt_baseline, device)
         ci_b = get_channel_idx(norm_b, args.y_key)
 
     truth_tiles = []

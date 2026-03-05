@@ -192,10 +192,12 @@ def run(smoke_test=False):
     split = 0.85
     channel_weights_env = os.environ.get("CHANNEL_WEIGHTS", "")
     channel_weights, channel_weights_map = _parse_channel_weights(channel_weights_env, y_keys)
+    param_transform = os.environ.get("PARAM_TRANSFORM", "none").strip() or "none"
     print(
         f"cfg: epochs={epochs} batch={batch_size} base={base} lr={lr:.2e} "
         f"sweep={sweep_enabled} early_stop_patience={early_stop_patience} y_keys={y_keys} "
-        f"z_dim={z_dim} sweep_preset={os.environ.get('SWEEP_PRESET', 'strong3')}"
+        f"z_dim={z_dim} sweep_preset={os.environ.get('SWEEP_PRESET', 'strong3')} "
+        f"param_transform={param_transform}"
     )
     print(f"channel_weights={channel_weights_map}")
 
@@ -210,10 +212,11 @@ def run(smoke_test=False):
             norm_fit_batch=4,
             num_workers=0,
             geom_h5=None,
+            param_transform=param_transform,
         )
 
     def train_trial(tag, *, t_base, t_lr, t_batch):
-        train_loader, val_loader, norm, Pdim, (H, W), param_scaler = make_data(t_batch)
+        train_loader, val_loader, norm, Pdim, (H, W), param_scaler, pt_name, pt_keys = make_data(t_batch)
         b0 = next(iter(train_loader))
         in_ch = b0["x"].shape[1]
         out_ch = b0["y"].shape[1]
@@ -243,6 +246,8 @@ def run(smoke_test=False):
             channel_weights=channel_weights,
             P=Pdim,
             z_dim=z_dim,
+            param_transform=pt_name,
+            param_keys=pt_keys,
         )
         best_val = float(np.min(np.asarray(hist.get("va_mse", [np.inf]), dtype=float)))
         print(f"[trial {tag}] best_val_mse={best_val:.6g} ckpt={trial_ckpt}")
@@ -315,7 +320,7 @@ def run(smoke_test=False):
         _assert_finite(name, value)
 
     # Deployment-style check: load checkpoint and predict from RAW params + mask.
-    model2, norm2, (p_mu, p_std) = load_checkpoint(final_ckpt, device)
+    model2, norm2, (p_mu, p_std), _pt, _pk = load_checkpoint(final_ckpt, device)
     mask_ref = va_s["mask"].squeeze(0).cpu().numpy().astype(np.float32)
     p_scaled = va_s["params"].cpu().numpy().astype(np.float32)
     if p_mu is not None and p_std is not None:

@@ -45,6 +45,8 @@ def train_unet(
     lam_grad_warmup_start: int = 20,         # epoch to start ramping grad loss
     lam_grad_warmup_end: int = 60,           # epoch to reach full lam_grad
     channel_weights=None,                    # optional list/array shape (C,)
+    param_transform=None,                    # e.g. "throughput_ratio"
+    param_keys=None,                         # transformed param key names
 ):
     """
     param_scaler: (mu, std) or None, to store for inference
@@ -337,6 +339,8 @@ def train_unet(
                 "param_std": std,
                 "param_scaler": (mu, std),
                 "channel_weights": None if cw_t is None else cw_t.detach().cpu().numpy().tolist(),
+                "param_transform": param_transform,
+                "param_keys": param_keys,
                 "history": history,
             }
             torch.save(ckpt, save_path)

@@ -193,7 +193,7 @@ def main():
     if npz_path is None:
         raise ValueError("Provide --npz (or --npz_path).")
 
-    model, norm, (p_mu, p_std) = load_checkpoint(args.ckpt, device)
+    model, norm, (p_mu, p_std), *_ = load_checkpoint(args.ckpt, device)
     ch_idx = 0
     if hasattr(norm, "y_keys"):
         norm_keys = [str(k) for k in norm.y_keys]
