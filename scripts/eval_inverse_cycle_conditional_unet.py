@@ -18,6 +18,17 @@ from solpex.utils import pick_device
 
 POSITIVE_KEYS = {"Te", "Ti", "ne", "ni", "Sp"}
 
+# LaTeX-friendly labels for parameters
+PARAM_LATEX = {
+    "Gamma_D2": r"$\Gamma_{\mathrm{D}_2}$",
+    "Ptot_W": r"$P_{\mathrm{tot}}$ [W]",
+    "n_core": r"$n_{\mathrm{core}}$",
+    "dna": r"$D_\perp$",
+    "hci": r"$\chi_i$",
+    "log10_thr": r"$\log_{10}(\mathrm{throughput})$",
+    "ratio_nc": r"$n_{\mathrm{core}} / \mathrm{throughput}$",
+}
+
 def split_indices(N, split=0.85, seed=42):
     idx = np.arange(N)
     rng = np.random.default_rng(seed)
@@ -461,9 +472,14 @@ def main():
                 row[f"{yk}_cycle_log_rmse"] = lrmse_c
         for k, name in enumerate(p_keys_phys):
             row[f"{name}_true"] = float(p_true_phys[k])
-            row[f"{name}_rec"] = float(p_rec_phys[k])
+            row[f"{name}_pred"] = float(p_rec_phys[k])
             row[f"{name}_abs_err"] = float(p_abs[k])
             row[f"{name}_rel_err"] = float(p_rel[k])
+        # Also store transformed-space values for diagnostics
+        p_true_trans = P_raw[gidx]  # true in transformed space
+        for k, name in enumerate(p_keys):
+            row[f"{name}_true"] = float(p_true_trans[k])
+            row[f"{name}_pred"] = float(p_rec_transformed[k])
         rows.append(row)
 
     # Save CSV
@@ -474,10 +490,47 @@ def main():
         for r in rows:
             w.writerow(r)
 
-    # Parameter true-vs-recovered correlation plots
-    nP = len(p_keys_phys)
-    ncols = min(3, nP)
-    nrows = int(np.ceil(nP / ncols))
+    def _latex(name):
+        return PARAM_LATEX.get(name, name)
+
+    def _make_corr_plot(keys, rows, save_path, title_prefix=""):
+        nP = len(keys)
+        ncols = min(3, nP)
+        nrows_p = int(np.ceil(nP / ncols))
+        fig, axes = plt.subplots(nrows_p, ncols, figsize=(5 * ncols, 4 * nrows_p), constrained_layout=True)
+        axes = np.atleast_1d(axes).reshape(nrows_p, ncols)
+        for k, name in enumerate(keys):
+            r = k // ncols
+            c = k % ncols
+            ax = axes[r, c]
+            t = np.array([row[f"{name}_true"] for row in rows], dtype=float)
+            p = np.array([row[f"{name}_pred"] for row in rows], dtype=float)
+            ax.scatter(t, p, s=args.plot_marker_size, alpha=0.85)
+            lo = min(np.min(t), np.min(p))
+            hi = max(np.max(t), np.max(p))
+            if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
+                ax.plot([lo, hi], [lo, hi], "k--", linewidth=1.0)
+            pear = float(np.corrcoef(t, p)[0, 1]) if len(t) > 2 else np.nan
+            spear = float(spearmanr(t, p).correlation) if len(t) > 2 else np.nan
+            label = _latex(name)
+            ax.set_xlabel(f"True {label}")
+            ax.set_ylabel(f"Predicted {label}")
+            ax.text(
+                0.03, 0.97, f"r={pear:.3f}\n$\\rho$={spear:.3f}",
+                transform=ax.transAxes, va="top", ha="left", fontsize=args.plot_tick_fontsize
+            )
+            ax.grid(alpha=0.25)
+        for k in range(nP, nrows_p * ncols):
+            r = k // ncols
+            c = k % ncols
+            axes[r, c].axis("off")
+        if title_prefix:
+            fig.suptitle(title_prefix, fontsize=args.plot_fontsize + 2)
+        fig.savefig(save_path, dpi=220, bbox_inches="tight")
+        plt.close(fig)
+        print("Saved:", save_path)
+
+    # Parameter true-vs-predicted correlation plots
     plt.rcParams.update(
         {
             "font.size": args.plot_fontsize,
@@ -486,41 +539,21 @@ def main():
             "ytick.labelsize": args.plot_tick_fontsize,
         }
     )
-    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows), constrained_layout=True)
-    axes = np.atleast_1d(axes).reshape(nrows, ncols)
-    for k, name in enumerate(p_keys_phys):
-        r = k // ncols
-        c = k % ncols
-        ax = axes[r, c]
-        t = np.array([row[f"{name}_true"] for row in rows], dtype=float)
-        p = np.array([row[f"{name}_rec"] for row in rows], dtype=float)
-        ax.scatter(t, p, s=args.plot_marker_size, alpha=0.85)
-        lo = min(np.min(t), np.min(p))
-        hi = max(np.max(t), np.max(p))
-        if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
-            ax.plot([lo, hi], [lo, hi], "k--", linewidth=1.0)
-        pear = float(np.corrcoef(t, p)[0, 1]) if len(t) > 2 else np.nan
-        spear = float(spearmanr(t, p).correlation) if len(t) > 2 else np.nan
-        ax.set_xlabel(f"True {name}")
-        ax.set_ylabel(f"Recovered {name}")
-        ax.text(
-            0.03, 0.97, f"r={pear:.3f}\n$\\rho$={spear:.3f}",
-            transform=ax.transAxes, va="top", ha="left", fontsize=args.plot_tick_fontsize
-        )
-        ax.grid(alpha=0.25)
-    # hide empty subplots
-    for k in range(nP, nrows * ncols):
-        r = k // ncols
-        c = k % ncols
-        axes[r, c].axis("off")
-    fig.savefig(args.out_plot, dpi=220, bbox_inches="tight")
-    plt.close(fig)
+
+    # Physical-space correlation plot
+    _make_corr_plot(p_keys_phys, rows, args.out_plot, title_prefix="Physical space")
+
+    # Transformed-space correlation plot (if a transform was applied)
+    if ckpt_param_transform and ckpt_param_transform != "none":
+        base, ext = os.path.splitext(args.out_plot)
+        trans_plot_path = f"{base}_transformed{ext}"
+        _make_corr_plot(p_keys, rows, trans_plot_path, title_prefix="Transformed space")
 
     # Per-parameter correlation table
     corr_rows = []
     for name in p_keys_phys:
         t = np.array([row[f"{name}_true"] for row in rows], dtype=float)
-        p = np.array([row[f"{name}_rec"] for row in rows], dtype=float)
+        p = np.array([row[f"{name}_pred"] for row in rows], dtype=float)
         ae = np.abs(p - t)
         re = ae / np.maximum(np.abs(t), 1e-12)
         pear = float(np.corrcoef(t, p)[0, 1]) if len(t) > 2 else np.nan
@@ -534,8 +567,8 @@ def main():
                 "mre": float(np.mean(re)),
                 "true_min": float(np.min(t)),
                 "true_max": float(np.max(t)),
-                "rec_min": float(np.min(p)),
-                "rec_max": float(np.max(p)),
+                "pred_min": float(np.min(p)),
+                "pred_max": float(np.max(p)),
             }
         )
     with open(args.out_param_corr_csv, "w", newline="") as f:
@@ -549,8 +582,8 @@ def main():
                 "mre",
                 "true_min",
                 "true_max",
-                "rec_min",
-                "rec_max",
+                "pred_min",
+                "pred_max",
             ],
         )
         w.writeheader()
@@ -565,7 +598,6 @@ def main():
     cyc_lrmse = np.array([r["cycle_log_rmse"] for r in rows], dtype=float)
     pmre = np.array([r["param_mre_mean"] for r in rows], dtype=float)
     print("Saved:", args.out_csv)
-    print("Saved:", args.out_plot)
     print("Saved:", args.out_param_corr_csv)
     print(
         f"[summary] n={len(rows)} "
