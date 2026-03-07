@@ -115,10 +115,12 @@ def train_one_run() -> MetricBundle:
     t0 = time.time()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_cuda = device.type == "cuda"
+    print(f"[autoresearch] device={device}", flush=True)
 
     os.makedirs(SAVE_DIR, exist_ok=True)
 
     # ---- Data ----
+    print("[autoresearch] loading data...", flush=True)
     train_loader, val_loader, norm, P, (H, W), param_scaler, param_transform, param_keys = make_loaders(
         npz_path=NPZ_PATH,
         inputs_mode=INPUTS_MODE,
@@ -141,6 +143,10 @@ def train_one_run() -> MetricBundle:
     # Inverse MLP: z_dim -> P (number of scaled params)
     z_dim_actual = Z_DIM if Z_DIM > 0 else BASE_CH * 8
     inverse_mlp = ZToParam(z_dim=z_dim_actual, P=P, hidden=(256, 256)).to(device)
+    n_unet = sum(p.numel() for p in model.parameters())
+    n_inv = sum(p.numel() for p in inverse_mlp.parameters())
+    print(f"[autoresearch] UNet params={n_unet:,}  inverse params={n_inv:,}  P={P} z_dim={z_dim_actual}", flush=True)
+    print(f"[autoresearch] in_ch={in_ch} out_ch={C_out} H={H} W={W} N_train={len(train_loader.dataset)} N_val={len(val_loader.dataset)}", flush=True)
 
     # ---- Optimizer ----
     all_params = list(model.parameters()) + list(inverse_mlp.parameters())
@@ -291,12 +297,13 @@ def train_one_run() -> MetricBundle:
 
         scheduler.step(va_composite)
 
-        if epoch % 10 == 0 or epoch == start_epoch + TOTAL_EPOCHS - 1:
+        if epoch % 5 == 0 or epoch == start_epoch + TOTAL_EPOCHS - 1:
             lr_now = optimizer.param_groups[0]["lr"]
             print(
                 f"Epoch {epoch:03d} | fwd {va_fwd:.5f} cycle {va_cycle:.5f} "
                 f"param {va_param:.5f} | val {va_composite:.5f} | lr {lr_now:.2e} "
-                f"| alpha {alpha_train:.3f} beta {beta_train:.3f} lam_g {lam_grad_epoch:.3f}"
+                f"| alpha {alpha_train:.3f} beta {beta_train:.3f} lam_g {lam_grad_epoch:.3f}",
+                flush=True,
             )
 
         # Checkpoint best
