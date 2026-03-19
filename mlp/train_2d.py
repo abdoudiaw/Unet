@@ -33,7 +33,54 @@ torch.set_default_dtype(torch.float32)
 
 
 # ======================================================================
-# Scaler (same as transport_learner.py)
+# Per-field normalization config
+# ======================================================================
+
+# "log" for positive fields, "symlog" for signed fields, "linear" for small-range
+NORM_CONFIG = {
+    "Te":  ("log",    1e-2),    # log(Te + eps), eps avoids log(0)
+    "Ti":  ("log",    1e-2),
+    "ne":  ("log",    1e16),
+    "ua":  ("symlog", 5e3),     # sign(x)*log1p(|x|/scale)
+    "Sp":  ("symlog", 1e10),
+    "Qe":  ("symlog", 1e2),
+    "Qi":  ("symlog", 1e2),
+    "Sm":  ("symlog", 1e-2),
+}
+
+
+def _apply_field_transform(data, columns):
+    """Apply per-field log/symlog transform. Returns transformed data (float32)."""
+    out = np.empty_like(data, dtype=np.float64)
+    for j, col in enumerate(columns):
+        mode, scale = NORM_CONFIG.get(col, ("linear", 1.0))
+        x = data[:, j].astype(np.float64)
+        if mode == "log":
+            out[:, j] = np.log(np.maximum(x, 0) + scale)
+        elif mode == "symlog":
+            out[:, j] = np.sign(x) * np.log1p(np.abs(x) / scale)
+        else:
+            out[:, j] = x
+    return out.astype(np.float32)
+
+
+def _invert_field_transform(data, columns):
+    """Inverse of _apply_field_transform. Returns physical-space data."""
+    out = np.empty_like(data, dtype=np.float64)
+    for j, col in enumerate(columns):
+        mode, scale = NORM_CONFIG.get(col, ("linear", 1.0))
+        x = data[:, j].astype(np.float64)
+        if mode == "log":
+            out[:, j] = np.exp(x) - scale
+        elif mode == "symlog":
+            out[:, j] = np.sign(x) * scale * (np.exp(np.abs(x)) - 1.0)
+        else:
+            out[:, j] = x
+    return out.astype(np.float32)
+
+
+# ======================================================================
+# Scaler (standard mean/std, applied AFTER field transform)
 # ======================================================================
 
 class Scaler(torch.nn.Module):
@@ -192,14 +239,19 @@ def evaluate_preloaded(batches, network, cost_scaler):
 
 
 def train_single(features_train, targets_train, config, device="cpu"):
-    """Train one MLP member. Returns the network in eval mode (physical units)."""
+    """Train one MLP member. Returns the network in eval mode (transformed space).
+
+    Targets are already in transformed space (log/symlog applied before calling).
+    The network output is in transformed space — caller must invert field
+    transform for physical-space scoring.
+    """
     n_total = len(features_train)
     n_valid = max(2, int(config["validation_fraction"] * n_total))
     n_train = n_total - n_valid
 
     preload_gpu = config.get("preload_gpu", False) and str(device) != "cpu"
 
-    # Split into train/valid
+    # Split into train/valid (targets already in transformed space)
     dataset = torch.utils.data.TensorDataset(
         torch.as_tensor(features_train),
         torch.as_tensor(targets_train),
@@ -292,7 +344,8 @@ def train_single(features_train, targets_train, config, device="cpu"):
             break
 
     network.load_state_dict(best_params)
-    # Append output scaler to get physical units
+    # Append output scaler: network outputs transformed space (log/symlog)
+    # Caller must apply _invert_field_transform for physical units
     final = torch.nn.Sequential(*network[:], outscaler).to(device)
     for p in final.parameters():
         p.requires_grad_(False)
@@ -300,8 +353,12 @@ def train_single(features_train, targets_train, config, device="cpu"):
     return final
 
 
-def train_ensemble(features, targets, run_ids, config, device="cpu"):
-    """Train an ensemble with group-based train/test split."""
+def train_ensemble(features, targets, run_ids, config, target_columns, device="cpu"):
+    """Train an ensemble with group-based train/test split.
+
+    Applies per-field log/symlog transform to targets before training.
+    Scoring is done in physical space (inverse-transformed).
+    """
     # Group split by run
     unique_runs = np.unique(run_ids)
     rng = np.random.RandomState(config["seed"])
@@ -311,10 +368,14 @@ def train_ensemble(features, targets, run_ids, config, device="cpu"):
     train_mask = np.array([r not in test_runs for r in run_ids])
     test_mask = ~train_mask
 
+    # Apply per-field transform (log/symlog) before training
+    targets_t = _apply_field_transform(targets, target_columns)
+
     feat_train = features[train_mask]
-    tgt_train = targets[train_mask]
+    tgt_train = targets_t[train_mask]
     feat_test = features[test_mask]
-    tgt_test = targets[test_mask]
+    tgt_test_t = targets_t[test_mask]        # transformed (for model eval)
+    tgt_test_phys = targets[test_mask]       # physical (for R² scoring)
 
     print(f"Train: {train_mask.sum()} cells ({len(unique_runs) - n_test} runs)")
     print(f"Test:  {test_mask.sum()} cells ({n_test} runs)")
@@ -329,17 +390,22 @@ def train_ensemble(features, targets, run_ids, config, device="cpu"):
         net = train_single(feat_train, tgt_train, config, device=device)
         elapsed = time.time() - t0
 
-        # Score on test set
+        # Score on test set — model outputs transformed space, invert for physical R²
         test_ds = torch.utils.data.TensorDataset(
             torch.as_tensor(feat_test),
-            torch.as_tensor(tgt_test),
+            torch.as_tensor(tgt_test_t),
         )
         test_loader = torch.utils.data.DataLoader(
             test_ds, batch_size=config["eval_batch_size"], shuffle=False,
             pin_memory=(str(device) != "cpu"),
         )
-        pred, true = evaluate(test_loader, net, cost_scaler=None, device=device)
-        r2s, rmses = score_model(pred, true)
+        pred_t, _ = evaluate(test_loader, net, cost_scaler=None, device=device)
+        # Invert field transform for physical-space scoring
+        pred_phys = _invert_field_transform(pred_t.cpu().numpy(), target_columns)
+        true_phys = tgt_test_phys
+        r2s, rmses = score_model(
+            torch.from_numpy(pred_phys), torch.from_numpy(true_phys)
+        )
 
         status = "ACCEPT" if np.all(r2s >= config["score_thresh"]) else "REJECT"
         print(f"  Attempt {attempts}: R²={r2s} RMSE={rmses} [{status}] ({elapsed:.0f}s)")
@@ -433,7 +499,8 @@ def main():
           f"members={args.n_members} lr={args.lr} batch={args.batch_size}")
 
     t0 = time.time()
-    networks, err_info = train_ensemble(features, targets, run_ids, config, device=args.device)
+    networks, err_info = train_ensemble(features, targets, run_ids, config,
+                                        target_columns=tgt_cols, device=args.device)
     elapsed = time.time() - t0
 
     model = EnsembleModel(
@@ -449,6 +516,7 @@ def main():
         "config": config,
         "feature_columns": feat_cols,
         "target_columns": tgt_cols,
+        "norm_config": {k: v for k, v in NORM_CONFIG.items() if k in tgt_cols},
         "err_info": err_info,
         "n_cells": features.shape[0],
         "n_runs": int(d["n_runs"]),
