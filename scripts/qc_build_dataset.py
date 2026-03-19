@@ -182,7 +182,10 @@ def particle_source_deuterium(bal, ref2d, comp_idx=-1):
 
 
 def load_case_native(run_dir_abs, y_keys):
-    shot = SolpsData(os.path.join(quixote.module_path(), run_dir_abs))
+    if os.path.isabs(run_dir_abs):
+        shot = SolpsData(run_dir_abs)
+    else:
+        shot = SolpsData(os.path.join(quixote.module_path(), run_dir_abs))
     r2d = np.array(shot.crx)[:, :, -1].astype(np.float32)
     z2d = np.array(shot.cry)[:, :, -1].astype(np.float32)
 
@@ -256,6 +259,7 @@ def main():
     ap.add_argument("--verbose-errors", action="store_true")
     args = ap.parse_args()
 
+    args.base_dir = os.path.abspath(args.base_dir)
     y_keys = [k.strip() for k in args.y_keys.split(",") if k.strip()]
     for k in y_keys:
         if k not in DEFAULT_RULES:
