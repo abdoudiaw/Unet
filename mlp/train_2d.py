@@ -131,13 +131,22 @@ def evaluate(loader, network, cost_scaler=None, device="cpu"):
 
 
 def score_model(predicted, true):
-    """Compute per-output R² and RMSE."""
-    pred_np = predicted.cpu().numpy()
-    true_np = true.cpu().numpy()
+    """Compute per-output R² and RMSE in float64 to avoid overflow."""
+    pred_np = predicted.cpu().numpy().astype(np.float64)
+    true_np = true.cpu().numpy().astype(np.float64)
+    # Guard against NaN/Inf from the model
+    valid = np.isfinite(pred_np) & np.isfinite(true_np)
     r2s, rmses = [], []
-    for p, t in zip(pred_np.T, true_np.T):
-        rmse = np.sqrt(sklearn.metrics.mean_squared_error(t, p))
-        r2 = sklearn.metrics.r2_score(t, p) if t.std() > 1e-12 else 1.0
+    for j, (p, t) in enumerate(zip(pred_np.T, true_np.T)):
+        m = valid[:, j]
+        if m.sum() < 2 or t[m].std() < 1e-12:
+            r2s.append(0.0)
+            rmses.append(float("inf"))
+            continue
+        rmse = np.sqrt(np.mean((t[m] - p[m]) ** 2))
+        ss_res = np.sum((t[m] - p[m]) ** 2)
+        ss_tot = np.sum((t[m] - t[m].mean()) ** 2)
+        r2 = 1.0 - ss_res / max(ss_tot, 1e-30)
         r2s.append(r2)
         rmses.append(rmse)
     return np.array(r2s), np.array(rmses)
