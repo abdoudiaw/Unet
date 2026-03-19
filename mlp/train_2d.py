@@ -29,7 +29,7 @@ import sklearn.metrics
 import torch
 import torch.utils.data
 
-torch.set_default_dtype(torch.float64)
+torch.set_default_dtype(torch.float32)
 
 
 # ======================================================================
@@ -71,7 +71,7 @@ class EnsembleModel:
         self.err_info = err_info
 
     def predict(self, features, device="cpu"):
-        features = np.asarray(features, dtype=np.float64)
+        features = np.asarray(features, dtype=np.float32)
         batched = features.ndim > 1
         tensor = torch.as_tensor(features).to(device)
         if not batched:
