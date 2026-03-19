@@ -193,19 +193,30 @@ def train_single(features_train, targets_train, config, device="cpu"):
     boredom = 0
     max_boredom = 2 * config["patience"] + 1
 
+    log_every = max(1, config["n_epochs"] // 20)  # ~20 log lines per member
     for epoch in range(config["n_epochs"]):
         train_epoch(train_loader, network, cost_fn, opt, cost_scaler, device)
         pred, true = evaluate(valid_loader, network, cost_scaler, device)
         eval_cost = (pred - true).abs().mean().item()
         scheduler.step(eval_cost)
 
-        if eval_cost < best_cost:
+        improved = eval_cost < best_cost
+        if improved:
             best_cost = eval_cost
             best_params = copy.deepcopy(network.state_dict())
             boredom = 0
         else:
             boredom += 1
+
+        if epoch % log_every == 0 or improved or boredom > max_boredom:
+            lr_now = opt.param_groups[0]["lr"]
+            mark = "*" if improved else " "
+            print(f"    epoch {epoch:4d}/{config['n_epochs']}  "
+                  f"val_mae={eval_cost:.6f}  best={best_cost:.6f}  "
+                  f"lr={lr_now:.2e}  boredom={boredom} {mark}")
+
         if boredom > max_boredom:
+            print(f"    early stop at epoch {epoch}")
             break
 
     network.load_state_dict(best_params)
