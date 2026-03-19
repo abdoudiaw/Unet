@@ -232,7 +232,7 @@ def main():
     ap.add_argument("--device", default="cpu", help="cpu, cuda, or mps")
     ap.add_argument("--out-dir", default="outputs/ablation")
     ap.add_argument("--out-csv", default="outputs/ablation/results.csv")
-    ap.add_argument("--subset", default="all", choices=["all", "arch", "loss"],
+    ap.add_argument("--subset", default="all", choices=["all", "arch", "loss", "combo"],
                     help="Run only a subset of experiments")
     ap.add_argument("--y-keys", default="Te,Ti,ne,ni,ua,Sp,Qe,Qi,Sm")
     ap.add_argument("--early-stop", type=int, default=30)
