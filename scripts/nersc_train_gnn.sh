@@ -15,13 +15,8 @@ set -euo pipefail
 
 module load pytorch/2.8.0
 
-# Activate venv for torch-geometric and other deps.
-# One-time setup:
-#   module load pytorch/2.8.0
-#   python -m venv --system-site-packages ~/.venvs/solpex-gnn
-#   source ~/.venvs/solpex-gnn/bin/activate
-#   pip install torch-geometric scikit-learn
-source ~/.venvs/solpex-gnn/bin/activate
+# Activate venv (install torch-geometric once: pip install torch-geometric scikit-learn)
+source ~/.venvs/walldyn/bin/activate
 
 # ---- Paths ----
 REPO="${HOME}/SOLPEx"
