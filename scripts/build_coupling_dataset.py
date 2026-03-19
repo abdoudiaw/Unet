@@ -42,7 +42,8 @@ J_PER_EV = 1.602176634e-19
 
 PARAM_KEYS = ["Gamma_D2", "Ptot_W", "Gamma_core", "dna", "hci"]
 PLASMA_KEYS = ["Te", "Ti", "ne", "ni", "ua", "vol", "hx", "hy",
-               "bb0", "bb1", "bb2", "bb3", "R", "Z"]
+               "bb0", "bb1", "bb2", "bb3", "R", "Z",
+               "crx0", "cry0", "crx1", "cry1", "crx2", "cry2", "crx3", "cry3"]
 SOURCE_KEYS = ["Sp", "Sne", "Qe", "Qi", "Sm", "dab2", "dmb2", "tab2", "tmb2"]
 
 
@@ -154,10 +155,13 @@ def load_run(run_dir):
         ua = ua_all[1]
 
         # --- Geometry ---
-        crx = np.array(ds.variables["crx"])
+        crx = np.array(ds.variables["crx"])  # (4+1, ny+2, nx+2)
         cry = np.array(ds.variables["cry"])
-        Rg = crx[-1][s]
-        Zg = cry[-1][s]
+        Rg = crx[-1][s]       # cell centre R
+        Zg = cry[-1][s]       # cell centre Z
+        # 4 corner coordinates (indices 0-3)
+        crx4 = crx[:4, s[0], s[1]]  # (4, ny, nx)
+        cry4 = cry[:4, s[0], s[1]]  # (4, ny, nx)
         vol = np.array(ds.variables["vol"])[s]
         hx = np.array(ds.variables["hx"])[s]
         hy = np.array(ds.variables["hy"])[s]
@@ -237,6 +241,11 @@ def load_run(run_dir):
         bb0=bb[0].astype(np.float32), bb1=bb[1].astype(np.float32),
         bb2=bb[2].astype(np.float32), bb3=bb[3].astype(np.float32),
         R=Rg.astype(np.float32), Z=Zg.astype(np.float32),
+        # 4 corner coordinates per cell
+        crx0=crx4[0].astype(np.float32), cry0=cry4[0].astype(np.float32),
+        crx1=crx4[1].astype(np.float32), cry1=cry4[1].astype(np.float32),
+        crx2=crx4[2].astype(np.float32), cry2=cry4[2].astype(np.float32),
+        crx3=crx4[3].astype(np.float32), cry3=cry4[3].astype(np.float32),
         Sp=Sp.astype(np.float32), Sne=Sne.astype(np.float32),
         Qe=Qe.astype(np.float32), Qi=Qi.astype(np.float32),
         Sm=Sm.astype(np.float32),
@@ -254,6 +263,8 @@ VALID_RULES = {
     "ua": "finite", "vol": "pos", "hx": "pos", "hy": "pos",
     "bb0": "finite", "bb1": "finite", "bb2": "finite", "bb3": "finite",
     "R": "finite", "Z": "finite",
+    "crx0": "finite", "cry0": "finite", "crx1": "finite", "cry1": "finite",
+    "crx2": "finite", "cry2": "finite", "crx3": "finite", "cry3": "finite",
     "Sp": "finite", "Sne": "finite", "Qe": "finite", "Qi": "finite", "Sm": "finite",
     "dab2": "nonneg", "dmb2": "nonneg", "tab2": "nonneg", "tmb2": "nonneg",
 }
