@@ -95,10 +95,24 @@ def build_experiments(subset="all"):
         {"tag": "d3_b32_bs2", "group": "batch", "overrides": {"batch": 2}},
     ]
 
+    # ---- Combined winners (best settings from first round) ----
+    combo_exps = [
+        {"tag": "nograd_b64", "group": "combo",
+         "overrides": {"lam_grad": 0.0, "base": 64}},
+        {"tag": "nograd_depth4", "group": "combo",
+         "overrides": {"lam_grad": 0.0, "depth": 4}},
+        {"tag": "nograd_b64_depth4", "group": "combo",
+         "overrides": {"lam_grad": 0.0, "base": 64, "depth": 4}},
+        {"tag": "nograd_film256", "group": "combo",
+         "overrides": {"lam_grad": 0.0, "film_hidden": 256}},
+    ]
+
     if subset in ("all", "arch"):
         experiments.extend(arch_exps)
     if subset in ("all", "loss"):
         experiments.extend(loss_exps)
+    if subset in ("all", "combo"):
+        experiments.extend(combo_exps)
 
     # Fill in baseline values for any missing keys
     for exp in experiments:
