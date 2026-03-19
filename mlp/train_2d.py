@@ -103,9 +103,11 @@ def build_network(n_inputs, n_outputs, n_hidden, n_layers, activation, inscaler)
     return torch.nn.Sequential(*layers)
 
 
-def train_epoch(loader, network, cost_fn, opt, cost_scaler):
+def train_epoch(loader, network, cost_fn, opt, cost_scaler, device):
     network.train()
     for batch_in, batch_out in loader:
+        batch_in = batch_in.to(device, non_blocking=True)
+        batch_out = batch_out.to(device, non_blocking=True)
         opt.zero_grad()
         pred = network(batch_in)
         loss = cost_fn(pred, cost_scaler(batch_out))
@@ -113,11 +115,13 @@ def train_epoch(loader, network, cost_fn, opt, cost_scaler):
         opt.step()
 
 
-def evaluate(loader, network, cost_scaler=None):
+def evaluate(loader, network, cost_scaler=None, device="cpu"):
     network.eval()
     preds, trues = [], []
     with torch.no_grad():
         for batch_in, batch_out in loader:
+            batch_in = batch_in.to(device, non_blocking=True)
+            batch_out = batch_out.to(device, non_blocking=True)
             pred = network(batch_in)
             if cost_scaler is not None:
                 batch_out = cost_scaler(batch_out)
@@ -145,9 +149,10 @@ def train_single(features_train, targets_train, config, device="cpu"):
     n_valid = max(2, int(config["validation_fraction"] * n_total))
     n_train = n_total - n_valid
 
+    # Keep data on CPU; move batches to device in train/eval loops
     dataset = torch.utils.data.TensorDataset(
-        torch.as_tensor(features_train).to(device),
-        torch.as_tensor(targets_train).to(device),
+        torch.as_tensor(features_train),
+        torch.as_tensor(targets_train),
     )
     train_ds, valid_ds = torch.utils.data.random_split(dataset, [n_train, n_valid])
 
@@ -173,11 +178,14 @@ def train_single(features_train, targets_train, config, device="cpu"):
         opt, patience=config["patience"], factor=0.5
     )
 
+    use_cuda = (str(device) != "cpu")
     train_loader = torch.utils.data.DataLoader(
-        train_ds, batch_size=config["batch_size"], shuffle=True
+        train_ds, batch_size=config["batch_size"], shuffle=True,
+        pin_memory=use_cuda, num_workers=2 if use_cuda else 0,
     )
     valid_loader = torch.utils.data.DataLoader(
-        valid_ds, batch_size=config["eval_batch_size"], shuffle=False
+        valid_ds, batch_size=config["eval_batch_size"], shuffle=False,
+        pin_memory=use_cuda, num_workers=2 if use_cuda else 0,
     )
 
     best_cost = float("inf")
@@ -186,8 +194,8 @@ def train_single(features_train, targets_train, config, device="cpu"):
     max_boredom = 2 * config["patience"] + 1
 
     for epoch in range(config["n_epochs"]):
-        train_epoch(train_loader, network, cost_fn, opt, cost_scaler)
-        pred, true = evaluate(valid_loader, network, cost_scaler)
+        train_epoch(train_loader, network, cost_fn, opt, cost_scaler, device)
+        pred, true = evaluate(valid_loader, network, cost_scaler, device)
         eval_cost = (pred - true).abs().mean().item()
         scheduler.step(eval_cost)
 
@@ -240,13 +248,14 @@ def train_ensemble(features, targets, run_ids, config, device="cpu"):
 
         # Score on test set
         test_ds = torch.utils.data.TensorDataset(
-            torch.as_tensor(feat_test).to(device),
-            torch.as_tensor(tgt_test).to(device),
+            torch.as_tensor(feat_test),
+            torch.as_tensor(tgt_test),
         )
         test_loader = torch.utils.data.DataLoader(
-            test_ds, batch_size=config["eval_batch_size"], shuffle=False
+            test_ds, batch_size=config["eval_batch_size"], shuffle=False,
+            pin_memory=(str(device) != "cpu"),
         )
-        pred, true = evaluate(test_loader, net, cost_scaler=None)
+        pred, true = evaluate(test_loader, net, cost_scaler=None, device=device)
         r2s, rmses = score_model(pred, true)
 
         status = "ACCEPT" if np.all(r2s >= config["score_thresh"]) else "REJECT"
