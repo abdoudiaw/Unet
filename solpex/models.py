@@ -188,6 +188,15 @@ class UNet(nn.Module):
         for i, (up, dec, drop) in enumerate(zip(self.up_convs, self.decoders, self.dropouts)):
             skip = skips[self.depth - 1 - i]
             h = up(h)
+            # Match spatial dims when pooling lost an odd pixel
+            dh = skip.shape[2] - h.shape[2]
+            dw = skip.shape[3] - h.shape[3]
+            if dh != 0 or dw != 0:
+                # Pad if upsampled is smaller, crop if larger
+                if dh > 0 or dw > 0:
+                    h = F.pad(h, [0, max(dw, 0), 0, max(dh, 0)])
+                if dh < 0 or dw < 0:
+                    h = h[:, :, :skip.shape[2], :skip.shape[3]]
             h = drop(dec(torch.cat([h, skip], dim=1)))
             if params is not None and self.P > 0:
                 h = self._apply_film(h, self.film_dec[i], params)
