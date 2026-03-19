@@ -27,7 +27,7 @@ from torch_geometric.loader import DataLoader
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from gnn.model import ConditionalGNN
+from gnn.conditional_gnn import ConditionalGNN
 from gnn.data import load_coupling_dataset
 
 
