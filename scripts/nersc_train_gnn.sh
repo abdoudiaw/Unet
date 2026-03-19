@@ -22,8 +22,10 @@ source ~/.venvs/solpex-gnn/bin/activate
 # ---- Paths ----
 REPO="${HOME}/SOLPEx"
 DATA="${DATA:-${HOME}/SOLPS_DATA/coupling_dataset.npz}"
-OUTDIR="${OUTDIR:-${HOME}/SOLPS_DATA/solpex_gnn_out}"
-mkdir -p "${OUTDIR}"
+OUTBASE="${OUTBASE:-${HOME}/SOLPS_DATA/solpex_gnn_out}"
+OUTDIR_COND="${OUTBASE}/conditional"
+OUTDIR_EIRENE="${OUTBASE}/eirene"
+mkdir -p "${OUTDIR_COND}" "${OUTDIR_EIRENE}"
 
 # ---- Pull latest code ----
 cd "${REPO}"
@@ -39,7 +41,7 @@ run_conditional() {
     echo "=== Training Conditional GNN (paper surrogate) ==="
     python gnn/train_gnn.py \
         --data "${DATA}" \
-        --output "${OUTDIR}/cond_gnn.pt" \
+        --output "${OUTDIR_COND}/cond_gnn.pt" \
         --device cuda \
         --hidden "${HIDDEN:-128}" \
         --n-layers "${NLAYERS:-6}" \
@@ -48,14 +50,14 @@ run_conditional() {
         --lr "${LR:-3e-4}" \
         --batch-size "${BATCH:-8}" \
         --patience "${PATIENCE:-30}" \
-        --results-csv "${OUTDIR}/cond_gnn_results.csv"
+        --results-csv "${OUTDIR_COND}/results.csv"
 }
 
 run_eirene() {
     echo "=== Training EIRENE-replacement GNN ==="
     python gnn/train_eirene_gnn.py \
         --data "${DATA}" \
-        --output "${OUTDIR}/eirene_gnn.pt" \
+        --output "${OUTDIR_EIRENE}/eirene_gnn.pt" \
         --device cuda \
         --hidden "${HIDDEN:-128}" \
         --n-layers "${NLAYERS:-6}" \
@@ -64,7 +66,7 @@ run_eirene() {
         --lr "${LR_EIRENE:-${LR:-1e-3}}" \
         --batch-size "${BATCH:-16}" \
         --patience "${PATIENCE_EIRENE:-${PATIENCE:-100}}" \
-        --results-csv "${OUTDIR}/eirene_gnn_results.csv"
+        --results-csv "${OUTDIR_EIRENE}/results.csv"
 }
 
 if [ "${MODEL}" = "conditional" ]; then
@@ -81,5 +83,5 @@ else
 fi
 
 echo ""
-echo "Output: ${OUTDIR}"
-ls -lh "${OUTDIR}"
+echo "Output: ${OUTBASE}"
+ls -lhR "${OUTBASE}"
