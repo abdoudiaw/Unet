@@ -24,10 +24,10 @@ from pathlib import Path
 import numpy as np
 
 
-PARAM_KEYS = ["Gamma_D2", "Ptot_W", "n_core", "dna", "hci"]
+PARAM_KEYS = ["Gamma_D2", "Ptot_W", "Gamma_core", "dna", "hci"]
 
 FEATURE_COLUMNS = (
-    "Gamma_D2", "Ptot_W", "n_core", "dna", "hci",
+    "Gamma_D2", "Ptot_W", "Gamma_core", "dna", "hci",
     "psi_n", "Bmag",
 )
 
@@ -87,14 +87,117 @@ def load_bfield_h5(path, Rg, Zg):
     return interp(pts).reshape(Rg.shape)
 
 
+def read_equilibrium(equ_file):
+    """
+    Read .equ equilibrium file.  Returns (r, z, psi, btf, rtf).
+    psi is on the (z, r) grid with shape (km, jm).
+    """
+    jm = km = btf = rtf = psib = None
+    read_r = read_z = read_psi = False
+    r_vals, z_vals, psi_vals = [], [], []
+
+    with open(equ_file, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            tok = line.split()
+            if not tok:
+                continue
+            if len(tok) >= 3 and tok[0] == "jm" and tok[1] == "=":
+                jm = int(tok[2]); continue
+            if len(tok) >= 3 and tok[0] == "km" and tok[1] == "=":
+                km = int(tok[2]); continue
+            if len(tok) >= 3 and tok[0] == "btf" and tok[1] == "=":
+                btf = float(tok[2]); continue
+            if len(tok) >= 3 and tok[0] == "rtf" and tok[1] == "=":
+                rtf = float(tok[2]); continue
+            if len(tok) >= 3 and tok[0] == "psib" and tok[1] == "=":
+                psib = float(tok[2]); continue
+            if tok[0] == "r(1:jm);":
+                read_r, read_z, read_psi = True, False, False; continue
+            if tok[0] == "z(1:km);":
+                read_r, read_z, read_psi = False, True, False; continue
+            if tok[0].startswith("((psi(j,k)"):
+                read_r, read_z, read_psi = False, False, True; continue
+            if read_r:
+                try: r_vals.extend(float(x) for x in tok)
+                except ValueError: read_r = False
+                continue
+            if read_z:
+                try: z_vals.extend(float(x) for x in tok)
+                except ValueError: read_z = False
+                continue
+            if read_psi:
+                try: psi_vals.extend(float(x) for x in tok)
+                except ValueError: read_psi = False
+                continue
+
+    r = np.asarray(r_vals[:jm], dtype=np.float64)
+    z = np.asarray(z_vals[:km], dtype=np.float64)
+    psi = np.asarray(psi_vals[:jm * km], dtype=np.float64).reshape((km, jm))
+    return r, z, psi, btf, rtf, psib
+
+
+def compute_psi_n_and_Bmag_from_equ(equ_file, Rg, Zg):
+    """
+    Compute normalised psi and |B| from an equilibrium file,
+    interpolated onto the data grid (Rg, Zg).
+    """
+    from scipy.interpolate import RegularGridInterpolator
+
+    r_eq, z_eq, psi_eq, btf, rtf, psib = read_equilibrium(equ_file)
+
+    # psi_n: normalise so psi_n=0 at axis, psi_n=1 at boundary
+    # Find axis (minimum |psi|)
+    psi_min = psi_eq.min()
+    psi_max = psi_eq.max()
+    # psib is the boundary value; axis is the extremum opposite to psib
+    if psib is not None and abs(psib) > 1e-12:
+        psi_axis = psi_min if abs(psi_max - psib) > abs(psi_min - psib) else psi_max
+        psi_bnd = psib
+    else:
+        psi_axis = psi_min
+        psi_bnd = psi_max
+    denom = psi_bnd - psi_axis
+    if abs(denom) < 1e-12:
+        denom = 1.0
+    psi_n_eq = (psi_eq - psi_axis) / denom
+
+    # |B| from psi
+    dz = z_eq[1] - z_eq[0]
+    dr = r_eq[1] - r_eq[0]
+    grad_z, grad_r = np.gradient(psi_eq, dz, dr)
+    rr = np.meshgrid(r_eq, z_eq)[0]
+    safe_r = np.where(np.abs(rr) > 1e-12, rr, 1e-12)
+    br = -grad_z / safe_r
+    bz = grad_r / safe_r
+    bt = (btf * rtf) / safe_r
+    bmag_eq = np.sqrt(br**2 + bt**2 + bz**2)
+
+    # Interpolate onto data grid
+    interp_psi = RegularGridInterpolator(
+        (z_eq, r_eq), psi_n_eq, method="linear",
+        bounds_error=False, fill_value=None,
+    )
+    interp_bmag = RegularGridInterpolator(
+        (z_eq, r_eq), bmag_eq, method="linear",
+        bounds_error=False, fill_value=None,
+    )
+    pts = np.column_stack([Zg.ravel(), Rg.ravel()])
+    psi_n_grid = np.clip(interp_psi(pts).reshape(Rg.shape), 0.0, 2.0)
+    bmag_grid = interp_bmag(pts).reshape(Rg.shape)
+
+    return psi_n_grid.astype(np.float32), bmag_grid.astype(np.float32)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Build per-cell MLP database from solps.npz")
     ap.add_argument("--npz", required=True, help="Path to solps.npz")
     ap.add_argument("--out", default="mlp/dataset_2d.npz", help="Output path")
-    ap.add_argument("--bfield", default=None, help="Optional bfield.h5 for real |B|")
-    ap.add_argument("--R0", type=float, default=None, help="Magnetic axis R (m)")
-    ap.add_argument("--Z0", type=float, default=None, help="Magnetic axis Z (m)")
-    ap.add_argument("--Bt0", type=float, default=None, help="On-axis Bt (T)")
+    ap.add_argument("--equ-file", default=None,
+                    help=".equ equilibrium file for real psi_n and |B| (recommended)")
+    ap.add_argument("--bfield", default=None, help="Optional bfield.h5 for |B| only")
+    ap.add_argument("--R0", type=float, default=None, help="Magnetic axis R (m), fallback")
+    ap.add_argument("--Z0", type=float, default=None, help="Magnetic axis Z (m), fallback")
+    ap.add_argument("--Bt0", type=float, default=None, help="On-axis Bt (T), fallback")
     args = ap.parse_args()
 
     print(f"Loading {args.npz} ...")
@@ -122,15 +225,19 @@ def main():
     available_targets = [t for t, i in zip(TARGET_COLUMNS, target_idx) if i is not None]
     print(f"  Available targets: {available_targets}")
 
-    # Compute spatial features
-    psi_n = compute_psi_n(Rg, Zg, R0=args.R0, Z0=args.Z0)
-
-    if args.bfield is not None:
-        print(f"Loading |B| from {args.bfield} ...")
-        Bmag = load_bfield_h5(args.bfield, Rg, Zg)
+    # Compute spatial features from equilibrium (preferred) or fallback
+    if args.equ_file is not None:
+        print(f"Computing psi_n and |B| from equilibrium: {args.equ_file}")
+        psi_n, Bmag = compute_psi_n_and_Bmag_from_equ(args.equ_file, Rg, Zg)
     else:
-        print("Approximating |B| from Bt~1/R ...")
-        Bmag = compute_Bmag(Rg, Bt0=args.Bt0, R0=args.R0)
+        print("No --equ-file provided, using approximations")
+        psi_n = compute_psi_n(Rg, Zg, R0=args.R0, Z0=args.Z0)
+        if args.bfield is not None:
+            print(f"  Loading |B| from {args.bfield} ...")
+            Bmag = load_bfield_h5(args.bfield, Rg, Zg)
+        else:
+            print("  Approximating |B| from Bt~1/R ...")
+            Bmag = compute_Bmag(Rg, Bt0=args.Bt0, R0=args.R0)
 
     # Build per-cell rows
     all_features = []

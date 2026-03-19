@@ -14,7 +14,7 @@ from scipy.stats import spearmanr
 PARAM_LATEX = {
     "Gamma_D2": r"$\Gamma_{\mathrm{D}_2}$ [at/s]",
     "Ptot_W": r"$P_{\mathrm{tot}}$ [MW]",
-    "n_core": r"$\Gamma_{\mathrm{core}}$ [at/s]",
+    "Gamma_core": r"$\Gamma_{\mathrm{core}}$ [at/s]",
     "dna": r"$D_\perp$ [m$^2$/s]",
     "hci": r"$\chi_i$ [m$^2$/s]",
     "Gamma_t": r"$\Gamma_t$ [at/s]",
@@ -25,7 +25,7 @@ def _latex(name):
     return PARAM_LATEX.get(name, name)
 
 
-PHYS_KEYS  = ["Gamma_D2", "Ptot_W", "n_core", "dna", "hci"]
+PHYS_KEYS  = ["Gamma_D2", "Ptot_W", "Gamma_core", "dna", "hci"]
 TRANS_KEYS = ["Gamma_t", "Ptot_W", "ratio_nc", "dna", "hci"]
 
 
@@ -199,16 +199,17 @@ def main():
         )
 
     # Transformed-space plot (linear):
-    # Gamma_t = Gamma_D2 + n_core
-    # ratio_nc = n_core / Gamma_t
+    # Gamma_t = Gamma_D2 + Gamma_core
+    # ratio_nc = Gamma_core / Gamma_t
+    gc_key = "Gamma_core" if f"Gamma_core_true" in cols else "n_core"
     has_phys = all(f"{k}_true" in cols and f"{k}{suffix}" in cols
-                   for k in ["Gamma_D2", "n_core"])
+                   for k in ["Gamma_D2", gc_key])
     if has_phys:
         for row in rows:
             g_true = float(row["Gamma_D2_true"])
-            n_true = float(row["n_core_true"])
+            n_true = float(row[f"{gc_key}_true"])
             g_pred = float(row[f"Gamma_D2{suffix}"])
-            n_pred = float(row[f"n_core{suffix}"])
+            n_pred = float(row[f"{gc_key}{suffix}"])
 
             gt_true = g_true + n_true
             gt_pred = g_pred + n_pred
@@ -227,7 +228,7 @@ def main():
             "Transformed space",
         )
     else:
-        print("Cannot compute transformed-space plot: missing Gamma_D2/n_core columns")
+        print("Cannot compute transformed-space plot: missing Gamma_D2/Gamma_core columns")
 
 
 if __name__ == "__main__":

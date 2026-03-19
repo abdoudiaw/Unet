@@ -2,7 +2,7 @@
 """
 Train an MLP ensemble on per-cell 2D SOLPS data.
 
-Inputs per cell:  [Gamma_D2, Ptot_W, n_core, dna, hci, psi_n, |B|]
+Inputs per cell:  [Gamma_D2, Ptot_W, Gamma_core, dna, hci, psi_n, |B|]
 Outputs per cell: [Te, Ti, ne, ua, Sp, Qe, Qi, Sm]
 
 Uses the same ensemble architecture as transport_learner.py but adapted

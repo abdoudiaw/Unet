@@ -16,7 +16,7 @@ import quixote
 from quixote import SolpsData
 
 
-PARAM_KEYS = ["Gamma_D2", "Ptot_W", "n_core", "dna", "hci"]
+PARAM_KEYS = ["Gamma_D2", "Ptot_W", "Gamma_core", "dna", "hci"]
 DEFAULT_RULES = {
     "Te": ("pos",),
     "Ti": ("pos",),
@@ -61,7 +61,7 @@ def load_params(params_json_path):
             return {
                 "Gamma_D2": float(gamma_d2),
                 "Ptot_W": float(pe) + float(pi),
-                "n_core": float(n_core),
+                "Gamma_core": float(n_core),
                 "dna": float(dna),
                 "hci": float(hci),
             }
@@ -80,7 +80,7 @@ def load_params(params_json_path):
         out = {
             "Gamma_D2": p.get("gas_puff") or p.get("Gamma_D2"),
             "Ptot_W": float(pe) + float(pi),
-            "n_core": p.get("core_density") or p.get("n_core"),
+            "Gamma_core": p.get("core_density") or p.get("n_core") or p.get("Gamma_core"),
             "dna": p.get("dna"),
             "hci": p.get("hci") or p.get("hce"),
         }

@@ -391,8 +391,9 @@ class SOLPSDataset(Dataset):
         return item
 
 # ---------- Parameter transforms ----------
-# Maps (Gamma_D2, n_core) -> (throughput, ratio) and back.
+# Maps (Gamma_D2, Gamma_core) -> (throughput, ratio) and back.
 # Other params (Ptot_W, dna, hci) pass through unchanged.
+# Backward compat: accepts either "n_core" or "Gamma_core" as column name.
 
 PARAM_TRANSFORMS = {"none", "throughput_ratio"}
 
@@ -408,10 +409,11 @@ def apply_param_transform(params, param_keys, transform):
     if transform != "throughput_ratio":
         raise ValueError(f"Unknown param_transform={transform!r}. Choose from {PARAM_TRANSFORMS}")
 
-    idx = _find_param_indices(param_keys, ["Gamma_D2", "n_core"])
-    ig, inc = idx["Gamma_D2"], idx["n_core"]
+    idx = _find_param_indices(param_keys, ["Gamma_D2", "Gamma_core", "n_core"])
+    ig = idx["Gamma_D2"]
+    inc = idx["Gamma_core"] if idx["Gamma_core"] is not None else idx["n_core"]
     if ig is None or inc is None:
-        raise KeyError(f"throughput_ratio requires Gamma_D2 and n_core in param_keys={list(param_keys)}")
+        raise KeyError(f"throughput_ratio requires Gamma_D2 and Gamma_core (or n_core) in param_keys={list(param_keys)}")
 
     out = params.astype(np.float64).copy()
     G = out[:, ig].copy()
@@ -441,11 +443,11 @@ def invert_param_transform(params, param_keys, transform):
     thr = 10.0 ** out[:, it]
     r = np.clip(out[:, ir], 1e-12, 1.0 - 1e-12)
     out[:, it] = thr * (1.0 - r)            # Gamma_D2
-    out[:, ir] = thr * r                     # n_core
+    out[:, ir] = thr * r                     # Gamma_core
 
     keys = list(param_keys)
     keys[it] = "Gamma_D2"
-    keys[ir] = "n_core"
+    keys[ir] = "Gamma_core"
     return out.astype(np.float32), keys
 
 

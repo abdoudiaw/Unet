@@ -97,7 +97,7 @@ TARGET_SPECS = [
 
 
 # Fixed param order -> columns in params matrix
-PARAM_KEYS = ["Gamma_D2", "Ptot_W", "n_core", "dna", "hci"]
+PARAM_KEYS = ["Gamma_D2", "Ptot_W", "Gamma_core", "dna", "hci"]
 
 def _deep_get(d, path, default=None):
     """Safely get nested keys: path like ('inputs','power','Pe_W')"""
@@ -118,7 +118,7 @@ ION_BASES      = ["eapl_shi", "eipl_shi", "empl_shi", "eppl_shi"]
 MOMENTUM_BASES = ["mapl_smo", "mipl_smo", "mmpl_smo", "mppl_smo"]
 
 # Fixed param order
-PARAM_KEYS = ["Gamma_D2", "Ptot_W", "n_core", "dna", "hci"]
+PARAM_KEYS = ["Gamma_D2", "Ptot_W", "Gamma_core", "dna", "hci"]
 
 def _deep_get(d, path, default=None):
     cur = d
@@ -147,7 +147,7 @@ def load_params(params_json_path):
             return {
                 "Gamma_D2": float(Gamma_D2),
                 "Ptot_W": float(Pe) + float(Pi),
-                "n_core": float(n_core),
+                "Gamma_core": float(n_core),
                 "dna": float(dna),
                 "hci": float(hci),
             }
@@ -167,7 +167,7 @@ def load_params(params_json_path):
         out = {
             "Gamma_D2": P.get("gas_puff") or P.get("Gamma_D2"),
             "Ptot_W": float(pe) + float(pi),
-            "n_core": P.get("core_density") or P.get("n_core"),
+            "Gamma_core": P.get("core_density") or P.get("n_core") or P.get("Gamma_core"),
             "dna": P.get("dna"),
             "hci": P.get("hci") or P.get("hce"),
         }
@@ -306,7 +306,7 @@ EDGE_CSV = "/Users/42d/ML_Projects/Tokamak_Pulse_Simulation_ML/scripts/data/edge
 H, W     =  96,40 #256, 128
 OUT_NPZ  = "solps_raster_dataset_new_.npz"
 
-PARAM_KEYS = ["Gamma_D2", "Ptot_W", "n_core", "dna", "hci"]
+PARAM_KEYS = ["Gamma_D2", "Ptot_W", "Gamma_core", "dna", "hci"]
 
 # Field validity rules:
 # - Te, Ti, ne, ni : finite & > 0

@@ -22,11 +22,11 @@ POSITIVE_KEYS = {"Te", "Ti", "ne", "ni", "Sp"}
 PARAM_LATEX = {
     "Gamma_D2": r"$\Gamma_{\mathrm{D}_2}$",
     "Ptot_W": r"$P_{\mathrm{tot}}$ [W]",
-    "n_core": r"$n_{\mathrm{core}}$",
+    "Gamma_core": r"$\Gamma_{\mathrm{core}}$",
     "dna": r"$D_\perp$",
     "hci": r"$\chi_i$",
     "log10_thr": r"$\log_{10}(\mathrm{throughput})$",
-    "ratio_nc": r"$n_{\mathrm{core}} / \mathrm{throughput}$",
+    "ratio_nc": r"$\Gamma_{\mathrm{core}} / \mathrm{throughput}$",
 }
 
 def split_indices(N, split=0.85, seed=42):
