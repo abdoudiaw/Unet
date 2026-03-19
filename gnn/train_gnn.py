@@ -159,11 +159,14 @@ def main():
     val_graphs = [graphs[i] for i in idx[n_train:]]
     print(f"  Train: {len(train_graphs)}, Val: {len(val_graphs)}")
 
-    # --- Normalizer ---
+    # --- Normalizer (fit on CPU before moving to device) ---
     norm = FieldNormalizer(target_keys).fit(train_graphs)
 
-    # --- Model ---
+    # --- Move graphs to device (preload — avoids CPU→GPU per batch) ---
     device = torch.device(args.device)
+    train_graphs = [g.to(device) for g in train_graphs]
+    val_graphs = [g.to(device) for g in val_graphs]
+    print(f"  Preloaded all graphs to {device}")
     param_dim = int(graphs[0].params.shape[1])
     model = ConditionalGNN(
         node_features=2,   # psi_n, |B|
