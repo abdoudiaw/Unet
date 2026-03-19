@@ -15,9 +15,6 @@ import numpy as np
 from scipy.stats import spearmanr
 import torch
 
-import quixote
-from quixote import SolpsData
-
 from solpex.predict import load_checkpoint
 from solpex.utils import pick_device
 from solpex.data import (
@@ -110,26 +107,57 @@ def load_npz_all(npz_path):
     return Y, y_keys, m, p
 
 
-def pick_reference_run(base_dir):
-    runs = sorted(
-        d for d in os.listdir(base_dir)
-        if d.startswith("run_") and os.path.isdir(os.path.join(base_dir, d))
-    )
-    if not runs:
-        raise RuntimeError(f"No run_* folders found under {base_dir}")
-    for rn in runs:
-        if os.path.exists(os.path.join(base_dir, rn, "params.json")):
-            return rn
-    return runs[0]
+def load_mesh_polygons_from_coupling(coupling_npz, run_index=0):
+    """Load cell polygons from coupling_dataset.npz corner coordinates.
 
+    Returns (run_name, grid (H,W,4,2), polys list).
+    The grid array has shape (H, W, 4, 2) where the last dim is (R, Z)
+    for each of the 4 corners.
+    """
+    d = np.load(coupling_npz, allow_pickle=True)
+    plasma = d["plasma"]          # (N, Cp, H, W)
+    plasma_keys = [str(k) for k in d["plasma_keys"]]
+    runs = list(d["runs"]) if "runs" in d.files else [str(i) for i in range(len(plasma))]
 
-def load_mesh_polygons(base_dir, run_name=None):
-    rn = run_name if run_name is not None else pick_reference_run(base_dir)
-    shot = SolpsData(os.path.join(quixote.module_path(), os.path.join(base_dir, rn)))
-    grid = np.asarray(shot.grid, dtype=np.float32)
-    H, W = grid.shape[:2]
+    pk = {k: i for i, k in enumerate(plasma_keys)}
+
+    # Check corners are available
+    if "crx0" not in pk:
+        raise KeyError(
+            "coupling_dataset.npz missing corner coords (crx0..cry3). "
+            "Rebuild with updated build_coupling_dataset.py."
+        )
+
+    idx = min(run_index, len(plasma) - 1)
+    H, W = plasma.shape[2], plasma.shape[3]
+
+    # Build (H, W, 4, 2) grid of corner polygons
+    grid = np.zeros((H, W, 4, 2), dtype=np.float32)
+    for c in range(4):
+        grid[:, :, c, 0] = plasma[idx, pk[f"crx{c}"]]  # R
+        grid[:, :, c, 1] = plasma[idx, pk[f"cry{c}"]]   # Z
+
     polys = [Polygon(grid[i, j], closed=True) for i in range(H) for j in range(W)]
-    return rn, grid, polys
+    return runs[idx], grid, polys
+
+
+def load_mesh_polygons_from_balance(balance_nc_path):
+    """Load cell polygons directly from a balance.nc file."""
+    from netCDF4 import Dataset as NCDataset
+    ds = NCDataset(balance_nc_path, "r")
+    s = (slice(1, -1), slice(1, -1))
+    crx = np.array(ds.variables["crx"])[:4, s[0], s[1]]  # (4, ny, nx)
+    cry = np.array(ds.variables["cry"])[:4, s[0], s[1]]
+    ds.close()
+
+    H, W = crx.shape[1], crx.shape[2]
+    grid = np.zeros((H, W, 4, 2), dtype=np.float32)
+    for c in range(4):
+        grid[:, :, c, 0] = crx[c]
+        grid[:, :, c, 1] = cry[c]
+
+    polys = [Polygon(grid[i, j], closed=True) for i in range(H) for j in range(W)]
+    return grid, polys
 
 
 def center_crop_2d(a, shape_hw):
@@ -298,8 +326,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--npz", required=True)
     ap.add_argument("--ckpt", required=True, help="outputs/source_from_plasma.pt")
-    ap.add_argument("--base-dir", required=True, help="SOLPS run_* base for mesh polygons")
-    ap.add_argument("--run-name", default=None)
+    ap.add_argument("--coupling-npz", default=None,
+                    help="coupling_dataset.npz for mesh polygons (preferred, no quixote)")
+    ap.add_argument("--balance-nc", default=None,
+                    help="Single balance.nc for mesh polygons (alternative)")
+    ap.add_argument("--base-dir", default=None,
+                    help="[DEPRECATED] SOLPS run_* base — use --coupling-npz instead")
     ap.add_argument("--all-fields", action="store_true")
     ap.add_argument("--y-key", default="Sp")
     ap.add_argument("--outdir", default="outputs/source_eval_mesh")
@@ -350,7 +382,19 @@ def main():
         if k not in out_idx:
             raise KeyError(f"Requested y-key {k!r} not in output_keys={out_keys}")
 
-    run_name, grid, polys = load_mesh_polygons(args.base_dir, args.run_name)
+    # Load mesh polygons from coupling dataset, balance.nc, or legacy base-dir
+    if args.coupling_npz:
+        run_name, grid, polys = load_mesh_polygons_from_coupling(args.coupling_npz)
+    elif args.balance_nc:
+        grid, polys = load_mesh_polygons_from_balance(args.balance_nc)
+        run_name = "balance.nc"
+    elif args.base_dir:
+        raise RuntimeError(
+            "--base-dir requires quixote (removed). Use --coupling-npz instead.\n"
+            "Build coupling_dataset.npz with: python scripts/build_coupling_dataset.py --base-dir <dir> --recursive --out coupling_dataset.npz"
+        )
+    else:
+        raise RuntimeError("Provide --coupling-npz or --balance-nc for mesh polygons.")
     mesh_hw = grid.shape[:2]
 
     summary = []
