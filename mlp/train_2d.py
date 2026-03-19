@@ -143,13 +143,54 @@ def score_model(predicted, true):
     return np.array(r2s), np.array(rmses)
 
 
+def _preload_batches(feat, tgt, batch_size, device, shuffle_seed=None):
+    """Split data into GPU-resident batches. Returns list of (x, y) tuples."""
+    n = len(feat)
+    idx = torch.arange(n)
+    if shuffle_seed is not None:
+        g = torch.Generator()
+        g.manual_seed(shuffle_seed)
+        idx = idx[torch.randperm(n, generator=g)]
+    batches = []
+    for start in range(0, n, batch_size):
+        end = min(start + batch_size, n)
+        bi = idx[start:end]
+        batches.append((feat[bi].to(device), tgt[bi].to(device)))
+    return batches
+
+
+def train_epoch_preloaded(batches, network, cost_fn, opt, cost_scaler):
+    """Train one epoch from preloaded GPU batches."""
+    network.train()
+    for batch_in, batch_out in batches:
+        opt.zero_grad()
+        pred = network(batch_in)
+        loss = cost_fn(pred, cost_scaler(batch_out))
+        loss.backward()
+        opt.step()
+
+
+def evaluate_preloaded(batches, network, cost_scaler):
+    """Evaluate on preloaded GPU batches."""
+    network.eval()
+    preds, trues = [], []
+    with torch.no_grad():
+        for batch_in, batch_out in batches:
+            pred = network(batch_in)
+            preds.append(pred)
+            trues.append(cost_scaler(batch_out))
+    return torch.cat(preds, 0), torch.cat(trues, 0)
+
+
 def train_single(features_train, targets_train, config, device="cpu"):
     """Train one MLP member. Returns the network in eval mode (physical units)."""
     n_total = len(features_train)
     n_valid = max(2, int(config["validation_fraction"] * n_total))
     n_train = n_total - n_valid
 
-    # Keep data on CPU; move batches to device in train/eval loops
+    preload_gpu = config.get("preload_gpu", False) and str(device) != "cpu"
+
+    # Split into train/valid
     dataset = torch.utils.data.TensorDataset(
         torch.as_tensor(features_train),
         torch.as_tensor(targets_train),
@@ -178,15 +219,28 @@ def train_single(features_train, targets_train, config, device="cpu"):
         opt, patience=config["patience"], factor=0.5
     )
 
-    use_cuda = (str(device) != "cpu")
-    train_loader = torch.utils.data.DataLoader(
-        train_ds, batch_size=config["batch_size"], shuffle=True,
-        pin_memory=use_cuda, num_workers=2 if use_cuda else 0,
-    )
-    valid_loader = torch.utils.data.DataLoader(
-        valid_ds, batch_size=config["eval_batch_size"], shuffle=False,
-        pin_memory=use_cuda, num_workers=2 if use_cuda else 0,
-    )
+    if preload_gpu:
+        # Load all data to GPU once — no DataLoader overhead
+        all_train_feat = train_ds[:][0].to(device)
+        all_train_tgt = train_ds[:][1].to(device)
+        all_valid_feat = valid_ds[:][0].to(device)
+        all_valid_tgt = valid_ds[:][1].to(device)
+        # Pre-split valid into batches (no shuffle needed)
+        valid_batches = _preload_batches(
+            all_valid_feat, all_valid_tgt, config["eval_batch_size"], device
+        )
+        train_loader = None
+        valid_loader = None
+    else:
+        use_cuda = (str(device) != "cpu")
+        train_loader = torch.utils.data.DataLoader(
+            train_ds, batch_size=config["batch_size"], shuffle=True,
+            pin_memory=use_cuda, num_workers=2 if use_cuda else 0,
+        )
+        valid_loader = torch.utils.data.DataLoader(
+            valid_ds, batch_size=config["eval_batch_size"], shuffle=False,
+            pin_memory=use_cuda, num_workers=2 if use_cuda else 0,
+        )
 
     best_cost = float("inf")
     best_params = copy.deepcopy(network.state_dict())
@@ -195,8 +249,17 @@ def train_single(features_train, targets_train, config, device="cpu"):
 
     log_every = max(1, config["n_epochs"] // 20)  # ~20 log lines per member
     for epoch in range(config["n_epochs"]):
-        train_epoch(train_loader, network, cost_fn, opt, cost_scaler, device)
-        pred, true = evaluate(valid_loader, network, cost_scaler, device)
+        if preload_gpu:
+            # Reshuffle train batches each epoch
+            train_batches = _preload_batches(
+                all_train_feat, all_train_tgt, config["batch_size"],
+                device, shuffle_seed=epoch,
+            )
+            train_epoch_preloaded(train_batches, network, cost_fn, opt, cost_scaler)
+            pred, true = evaluate_preloaded(valid_batches, network, cost_scaler)
+        else:
+            train_epoch(train_loader, network, cost_fn, opt, cost_scaler, device)
+            pred, true = evaluate(valid_loader, network, cost_scaler, device)
         eval_cost = (pred - true).abs().mean().item()
         scheduler.step(eval_cost)
 
@@ -315,6 +378,10 @@ def main():
     ap.add_argument("--max-tries", type=int, default=50)
     ap.add_argument("--seed", type=int, default=42)
 
+    # Performance
+    ap.add_argument("--preload-gpu", action="store_true",
+                    help="Load entire dataset to GPU memory (faster, needs ~200MB VRAM)")
+
     # Output
     ap.add_argument("--results-csv", default=None)
     args = ap.parse_args()
@@ -338,6 +405,7 @@ def main():
         n_members=args.n_members,
         test_fraction=args.test_fraction,
         score_thresh=args.score_thresh,
+        preload_gpu=args.preload_gpu,
         max_model_tries=args.max_tries,
         seed=args.seed,
     )
