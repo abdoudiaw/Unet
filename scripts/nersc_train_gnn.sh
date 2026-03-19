@@ -13,10 +13,14 @@
 
 set -euo pipefail
 
-module load python
-module load pytorch/2.0  # adjust to available pytorch module on Perlmutter
+module load pytorch/2.8.0
 
-# Activate your venv (create once: python -m venv ~/.venvs/solpex-gnn)
+# Activate venv for torch-geometric and other deps.
+# One-time setup:
+#   module load pytorch/2.8.0
+#   python -m venv --system-site-packages ~/.venvs/solpex-gnn
+#   source ~/.venvs/solpex-gnn/bin/activate
+#   pip install torch-geometric scikit-learn
 source ~/.venvs/solpex-gnn/bin/activate
 
 # ---- Paths ----
