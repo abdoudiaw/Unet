@@ -86,49 +86,65 @@ class UNet(nn.Module):
     When P > 0, scalar control parameters are injected via FiLM (Feature-wise
     Linear Modulation) at every encoder, bottleneck, and decoder level.
     When P == 0, behaves identically to the original architecture.
+
+    Parameters
+    ----------
+    depth : int
+        Number of encoder/decoder levels (default 3 for backward compatibility).
+        Channel multipliers are 1, 2, 4, ..., 2^depth at bottleneck.
+    base_loss : str
+        Not used here — kept for docs. See losses.py.
     """
     def __init__(self, in_ch=1, out_ch=1, base=32, groups_gn=8, dropout=0.0,
-                 P: int = 0, film_hidden: int = 128, z_dim: int = 0):
+                 P: int = 0, film_hidden: int = 128, z_dim: int = 0,
+                 depth: int = 3):
         super().__init__()
         self.dropout = dropout
         self.P = P
         self.z_dim = z_dim
+        self.depth = depth
         self.pool = nn.MaxPool2d(2)
 
-        self.enc1 = DoubleConv(in_ch, base, groups_gn)
-        self.enc2 = DoubleConv(base, base*2, groups_gn)
-        self.enc3 = DoubleConv(base*2, base*4, groups_gn)
+        # Build encoder levels: channel mults are 1, 2, 4, ..., 2^(depth-1)
+        enc_channels = [base * (2 ** i) for i in range(depth)]
+        self.encoders = nn.ModuleList()
+        ch_in = in_ch
+        for ch_out in enc_channels:
+            self.encoders.append(DoubleConv(ch_in, ch_out, groups_gn))
+            ch_in = ch_out
 
-        self.bot  = DoubleConv(base*4, base*8, groups_gn)
+        # Bottleneck: 2^depth * base channels
+        bot_ch = base * (2 ** depth)
+        self.bot = DoubleConv(enc_channels[-1], bot_ch, groups_gn)
 
-        self.up3  = nn.ConvTranspose2d(base*8, base*4, 2, 2)
-        self.dec3 = DoubleConv(base*4 + base*4, base*4, groups_gn)
-        self.drop3 = nn.Dropout2d(dropout) if dropout > 0 else nn.Identity()
+        # Build decoder levels (reverse order)
+        self.up_convs = nn.ModuleList()
+        self.decoders = nn.ModuleList()
+        self.dropouts = nn.ModuleList()
+        dec_in = bot_ch
+        for i in reversed(range(depth)):
+            skip_ch = enc_channels[i]
+            self.up_convs.append(nn.ConvTranspose2d(dec_in, skip_ch, 2, 2))
+            self.decoders.append(DoubleConv(skip_ch + skip_ch, skip_ch, groups_gn))
+            self.dropouts.append(nn.Dropout2d(dropout) if dropout > 0 else nn.Identity())
+            dec_in = skip_ch
 
-        self.up2  = nn.ConvTranspose2d(base*4, base*2, 2, 2)
-        self.dec2 = DoubleConv(base*2 + base*2, base*2, groups_gn)
-        self.drop2 = nn.Dropout2d(dropout) if dropout > 0 else nn.Identity()
-
-        self.up1  = nn.ConvTranspose2d(base*2, base, 2, 2)
-        self.dec1 = DoubleConv(base + base, base, groups_gn)
-        self.drop1 = nn.Dropout2d(dropout) if dropout > 0 else nn.Identity()
-
-        self.out  = nn.Conv2d(base, out_ch, 1)
+        self.out = nn.Conv2d(enc_channels[0], out_ch, 1)
 
         # FiLM conditioning layers (only when P > 0)
         if P > 0:
-            self.film_enc1 = FiLMGenerator(P, base, film_hidden)
-            self.film_enc2 = FiLMGenerator(P, base*2, film_hidden)
-            self.film_enc3 = FiLMGenerator(P, base*4, film_hidden)
-            self.film_bot  = FiLMGenerator(P, base*8, film_hidden)
-            self.film_dec3 = FiLMGenerator(P, base*4, film_hidden)
-            self.film_dec2 = FiLMGenerator(P, base*2, film_hidden)
-            self.film_dec1 = FiLMGenerator(P, base, film_hidden)
+            self.film_enc = nn.ModuleList(
+                [FiLMGenerator(P, ch, film_hidden) for ch in enc_channels]
+            )
+            self.film_bot = FiLMGenerator(P, bot_ch, film_hidden)
+            self.film_dec = nn.ModuleList(
+                [FiLMGenerator(P, enc_channels[i], film_hidden) for i in reversed(range(depth))]
+            )
 
         # Learned latent projection (only when z_dim > 0)
         if z_dim > 0:
-            self.z_proj = nn.Linear(base * 8, z_dim)
-            self.z_unproj = nn.Linear(z_dim, base * 8)
+            self.z_proj = nn.Linear(bot_ch, z_dim)
+            self.z_unproj = nn.Linear(z_dim, bot_ch)
         else:
             self.z_proj = None
             self.z_unproj = None
@@ -141,7 +157,7 @@ class UNet(nn.Module):
 
     def project_z(self, b):
         """Bottleneck -> compressed latent: (B,C,h,w) -> (B, z_dim)."""
-        z = bottleneck_to_z(b)  # (B, base*8)
+        z = bottleneck_to_z(b)
         if self.z_proj is not None:
             z = self.z_proj(z)
         return z
@@ -155,35 +171,27 @@ class UNet(nn.Module):
         return z_to_bottleneck(z_full, b_shape)
 
     def encode(self, x, params=None):
-        e1 = self.enc1(x)
-        if params is not None and self.P > 0:
-            e1 = self._apply_film(e1, self.film_enc1, params)
-        e2 = self.enc2(self.pool(e1))
-        if params is not None and self.P > 0:
-            e2 = self._apply_film(e2, self.film_enc2, params)
-        e3 = self.enc3(self.pool(e2))
-        if params is not None and self.P > 0:
-            e3 = self._apply_film(e3, self.film_enc3, params)
-        b  = self.bot(self.pool(e3))
+        skips = []
+        h = x
+        for i, enc in enumerate(self.encoders):
+            h = enc(h if i == 0 else self.pool(h))
+            if params is not None and self.P > 0:
+                h = self._apply_film(h, self.film_enc[i], params)
+            skips.append(h)
+        b = self.bot(self.pool(h))
         if params is not None and self.P > 0:
             b = self._apply_film(b, self.film_bot, params)
-        return b, (e1, e2, e3)
+        return b, skips
 
     def decode(self, b, skips, params=None):
-        e1, e2, e3 = skips
-        u3 = self.up3(b)
-        d3 = self.drop3(self.dec3(torch.cat([u3, e3], dim=1)))
-        if params is not None and self.P > 0:
-            d3 = self._apply_film(d3, self.film_dec3, params)
-        u2 = self.up2(d3)
-        d2 = self.drop2(self.dec2(torch.cat([u2, e2], dim=1)))
-        if params is not None and self.P > 0:
-            d2 = self._apply_film(d2, self.film_dec2, params)
-        u1 = self.up1(d2)
-        d1 = self.drop1(self.dec1(torch.cat([u1, e1], dim=1)))
-        if params is not None and self.P > 0:
-            d1 = self._apply_film(d1, self.film_dec1, params)
-        return self.out(d1)
+        h = b
+        for i, (up, dec, drop) in enumerate(zip(self.up_convs, self.decoders, self.dropouts)):
+            skip = skips[self.depth - 1 - i]
+            h = up(h)
+            h = drop(dec(torch.cat([h, skip], dim=1)))
+            if params is not None and self.P > 0:
+                h = self._apply_film(h, self.film_dec[i], params)
+        return self.out(h)
 
     def forward(self, x, params=None, return_bottleneck: bool = False):
         b, skips = self.encode(x, params=params)

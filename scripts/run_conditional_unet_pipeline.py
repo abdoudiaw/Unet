@@ -189,14 +189,17 @@ def run(smoke_test=False):
     z_dim = _env_int("Z_DIM", 0)
     lam_grad = _env_float("LAM_GRAD", 0.1)
     lam_grad_warmup_end = _env_int("LAM_GRAD_WARMUP_END", 60)
+    depth = _env_int("DEPTH", 3)
+    dropout = _env_float("DROPOUT", 0.0)
     split = 0.85
     channel_weights_env = os.environ.get("CHANNEL_WEIGHTS", "")
     channel_weights, channel_weights_map = _parse_channel_weights(channel_weights_env, y_keys)
     param_transform = os.environ.get("PARAM_TRANSFORM", "none").strip() or "none"
     print(
-        f"cfg: epochs={epochs} batch={batch_size} base={base} lr={lr:.2e} "
-        f"sweep={sweep_enabled} early_stop_patience={early_stop_patience} y_keys={y_keys} "
-        f"z_dim={z_dim} sweep_preset={os.environ.get('SWEEP_PRESET', 'strong3')} "
+        f"cfg: epochs={epochs} batch={batch_size} base={base} lr={lr:.2e} depth={depth} "
+        f"dropout={dropout} sweep={sweep_enabled} early_stop_patience={early_stop_patience} "
+        f"y_keys={y_keys} z_dim={z_dim} "
+        f"sweep_preset={os.environ.get('SWEEP_PRESET', 'strong3')} "
         f"param_transform={param_transform}"
     )
     print(f"channel_weights={channel_weights_map}")
@@ -215,12 +218,18 @@ def run(smoke_test=False):
             param_transform=param_transform,
         )
 
-    def train_trial(tag, *, t_base, t_lr, t_batch):
+    def train_trial(tag, *, t_base, t_lr, t_batch, t_depth=None, t_dropout=None,
+                    t_lam_grad=None, t_film_hidden=None):
+        t_depth = t_depth if t_depth is not None else depth
+        t_dropout = t_dropout if t_dropout is not None else dropout
+        t_lam_grad = t_lam_grad if t_lam_grad is not None else lam_grad
+        t_film_hidden = t_film_hidden if t_film_hidden is not None else 128
         train_loader, val_loader, norm, Pdim, (H, W), param_scaler, pt_name, pt_keys = make_data(t_batch)
         b0 = next(iter(train_loader))
         in_ch = b0["x"].shape[1]
         out_ch = b0["y"].shape[1]
-        print(f"[trial {tag}] in_ch={in_ch} out_ch={out_ch} Pdim={Pdim} (FiLM) H={H} W={W}")
+        print(f"[trial {tag}] in_ch={in_ch} out_ch={out_ch} Pdim={Pdim} (FiLM) "
+              f"H={H} W={W} depth={t_depth} dropout={t_dropout}")
         trial_ckpt = f"outputs/cond_unet_{tag}.pt"
         model, hist = train_unet(
             train_loader=train_loader,
@@ -233,7 +242,7 @@ def run(smoke_test=False):
             epochs=epochs,
             base=t_base,
             amp=False,
-            lam_grad=lam_grad,
+            lam_grad=t_lam_grad,
             lam_grad_warmup_end=lam_grad_warmup_end,
             lam_w=0.5,
             multiscale=0,
@@ -246,6 +255,7 @@ def run(smoke_test=False):
             channel_weights=channel_weights,
             P=Pdim,
             z_dim=z_dim,
+            depth=t_depth,
             param_transform=pt_name,
             param_keys=pt_keys,
         )

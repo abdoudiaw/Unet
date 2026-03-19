@@ -17,7 +17,7 @@ def train_unet(
     inputs_mode="params",
     lam_grad=0.2, lam_w=1.0, lam_ev=0.0,
     epochs=10, base=32, param_scaler=None, model_cls=None,
-    P: int = 0, film_hidden: int = 128, z_dim: int = 0,
+    P: int = 0, film_hidden: int = 128, z_dim: int = 0, depth: int = 3, dropout: float = 0.0,
     save_path="unet_best.pt",
     return_history: bool = True,
     history_path=None,
@@ -67,7 +67,7 @@ def train_unet(
         from .models import UNet
         model_cls = lambda in_ch, out_ch: UNet(
             in_ch=in_ch, out_ch=out_ch, base=base, P=P, film_hidden=film_hidden,
-            z_dim=z_dim,
+            z_dim=z_dim, depth=depth, dropout=dropout,
         )
 
     model = model_cls(in_ch, out_ch).to(device)
@@ -333,6 +333,7 @@ def train_unet(
                 "best_val": float(best_val),
                 "norm": _norm_to_ckpt(norm),
                 "in_ch": in_ch, "out_ch": out_ch, "base": base, "dropout": getattr(model, "dropout", 0.0),
+                "depth": getattr(model, "depth", 3),
                 "P": P, "film_hidden": film_hidden, "z_dim": z_dim,
                 "inputs_mode": inputs_mode,
                 "param_mu": mu,
