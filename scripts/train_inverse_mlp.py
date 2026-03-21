@@ -99,7 +99,7 @@ def main():
     p_mu = np.asarray(p_mu, dtype=np.float32)
     p_std = np.asarray(p_std, dtype=np.float32)
     print(f"param_transform={ckpt_param_transform}, param_keys={ckpt_param_keys}")
-    print(f"Forward model loaded: in_ch={model.enc1.net[0].in_channels}")
+    print(f"Forward model loaded: in_ch={model.encoders[0].net[0].in_channels}")
 
     # Load dataset
     d = np.load(args.npz, allow_pickle=True)
